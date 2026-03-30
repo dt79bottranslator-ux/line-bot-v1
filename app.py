@@ -1,18 +1,27 @@
 from flask import Flask, request, jsonify
-import os
 import requests
+import os
 
 app = Flask(__name__)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
+def simple_translate(text):
+    mapping = {
+        "hello": "xin chào",
+        "bye": "tạm biệt"
+    }
+    return mapping.get(text.lower(), f"(demo) {text}")
+
 def reply_text(reply_token, text):
     url = "https://api.line.me/v2/bot/message/reply"
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
     }
-    payload = {
+
+    data = {
         "replyToken": reply_token,
         "messages": [
             {
@@ -22,43 +31,30 @@ def reply_text(reply_token, text):
         ]
     }
 
-    r = requests.post(url, headers=headers, json=payload)
-    print("LINE reply status:", r.status_code)
-    print("LINE reply body:", r.text)
-    return r
-
-
-def simple_translate(text):
-    text = text.strip().lower()
-
-    mapping = {
-        "hello": "xin chào",
-        "bye": "tạm biệt"
-    }
-
-    return mapping.get(text, f"(demo) {text}")
-
+    requests.post(url, headers=headers, json=data)
 
 @app.route("/")
 def home():
-    return "LINE Bot is running"
-
+    return "Bot is running"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    body = request.get_json()
-    print("Incoming payload:", body)
+    body = request.json
 
-    events = body.get("events", [])
+    if "events" not in body:
+        return jsonify({"status": "no events"})
 
-    for event in events:
-        if event.get("type") == "message":
-            message = event.get("message", {})
-            if message.get("type") == "text":
-                user_text = message.get("text", "")
-                reply_token = event.get("replyToken")
+    for event in body["events"]:
+        if event["type"] == "message":
+            if event["message"]["type"] == "text":
+                user_text = event["message"]["text"]
+                reply_token = event["replyToken"]
 
-                translated_text = simple_translate(user_text)
-                reply_text(reply_token, translated_text)
+                translated = simple_translate(user_text)
+
+                reply_text(reply_token, translated)
 
     return jsonify({"status": "ok"})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
