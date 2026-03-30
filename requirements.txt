@@ -1,3 +1,5 @@
 flask
 requests
 google-auth
+gspread
+oauth2client
