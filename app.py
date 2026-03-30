@@ -1,21 +1,52 @@
 import os
+import json
 import requests
 from flask import Flask, request, jsonify
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request
 
 app = Flask(__name__)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 
 
-def simple_translate(text):
-    text = (text or "").lower().strip()
+def get_google_access_token():
+    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
 
-    if text == "hello":
-        return "xin chào"
-    elif text == "bye":
-        return "tạm biệt"
-    else:
-        return f"(demo) {text}"
+    credentials = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+
+    credentials.refresh(Request())
+    return credentials.token
+
+
+def translate_text(text, target_language="vi"):
+    if not text:
+        return ""
+
+    access_token = get_google_access_token()
+
+    url = "https://translation.googleapis.com/v3/projects/dt79-bot-system/locations/global:translateText"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "contents": [text],
+        "mimeType": "text/plain",
+        "targetLanguageCode": target_language
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=20)
+
+    if response.status_code != 200:
+        return f"[Translate API Error] {response.status_code}: {response.text}"
+
+    data = response.json()
+    return data["translations"][0]["translatedText"]
 
 
 def reply_text(reply_token, text):
@@ -64,7 +95,7 @@ def webhook():
         user_text = message.get("text", "")
         reply_token = event.get("replyToken")
 
-        translated = simple_translate(user_text)
+        translated = translate_text(user_text, target_language="vi")
         reply_text(reply_token, translated)
 
     return jsonify({"status": "ok"}), 200
