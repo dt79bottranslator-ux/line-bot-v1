@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # =========================================================
 LINE_CHANNEL_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
-PORT = int(os.getenv("PORT", 10000))
+PORT = int(os.getenv("PORT", "10000"))
 
 # =========================================================
 # GOOGLE CLOUD CONFIG (cấu hình Google Cloud)
@@ -33,11 +33,21 @@ GOOGLE_AUTH_SCOPE = ["https://www.googleapis.com/auth/cloud-platform"]
 
 # =========================================================
 # MULTI-LANGUAGE MODE (chế độ đa ngôn ngữ)
-# In-memory store (bộ nhớ tạm trong RAM)
+# user input (đầu vào người dùng) -> actual target language (ngôn ngữ đích thật)
+# zh sẽ được map sang zh-TW để ra chữ phồn thể Đài Loan
 # =========================================================
-user_language_prefs = {}
-SUPPORTED_LANGS = {"vi", "zh", "en"}
+LANGUAGE_ALIAS_MAP = {
+    "vi": "vi",
+    "en": "en",
+    "zh": "zh-TW",
+    "zh-tw": "zh-TW",
+}
+
+SUPPORTED_LANG_COMMANDS = {"vi", "en", "zh", "zh-tw"}
 DEFAULT_TARGET_LANG = "vi"
+
+# In-memory store (bộ nhớ tạm trong RAM)
+user_language_prefs = {}
 
 # =========================================================
 # VALIDATION (kiểm tra cấu hình)
@@ -52,7 +62,7 @@ if not GOOGLE_SERVICE_ACCOUNT_JSON:
 # =========================================================
 # HELPERS (hàm phụ trợ)
 # =========================================================
-def get_google_access_token():
+def get_google_access_token() -> str:
     """
     Tạo access token (mã truy cập) từ service account JSON
     """
@@ -69,7 +79,7 @@ def get_google_access_token():
 
 def translate_text_with_google(text: str, target_lang: str) -> str:
     """
-    Gọi Cloud Translation API để dịch văn bản
+    Gọi Google Cloud Translation API để dịch văn bản
     """
     access_token = get_google_access_token()
 
@@ -91,7 +101,7 @@ def translate_text_with_google(text: str, target_lang: str) -> str:
         timeout=30
     )
 
-    logger.info("Translate status=%s", response.status_code)
+    logger.info("Translate status=%s target_lang=%s", response.status_code, target_lang)
 
     if response.status_code != 200:
         raise RuntimeError(
@@ -143,27 +153,54 @@ def reply_to_line(reply_token: str, text: str) -> None:
         )
 
 
+def normalize_language_command(lang_input: str) -> str:
+    """
+    Chuẩn hóa lệnh ngôn ngữ người dùng nhập
+    Ví dụ:
+    zh -> zh-TW
+    zh-tw -> zh-TW
+    vi -> vi
+    en -> en
+    """
+    normalized = lang_input.strip().lower()
+    return LANGUAGE_ALIAS_MAP.get(normalized, "")
+
+
 def handle_language_command(text: str, user_id: str) -> str:
     """
     Xử lý lệnh:
     /lang vi
-    /lang zh
     /lang en
+    /lang zh
+    /lang zh-TW
     """
     parts = text.strip().split()
 
     if len(parts) != 2:
-        return "Sai cú pháp. Dùng: /lang vi hoặc /lang zh hoặc /lang en"
+        return "Sai cú pháp. Dùng: /lang vi hoặc /lang en hoặc /lang zh"
 
-    lang = parts[1].lower().strip()
+    lang_input = parts[1].strip().lower()
 
-    if lang not in SUPPORTED_LANGS:
-        return "Ngôn ngữ chưa hỗ trợ. Chỉ hỗ trợ: vi, zh, en"
+    if lang_input not in SUPPORTED_LANG_COMMANDS:
+        return "Ngôn ngữ chưa hỗ trợ. Chỉ hỗ trợ: vi, en, zh"
 
-    user_language_prefs[user_id] = lang
-    logger.info("Saved language user_id=%s target_lang=%s", user_id, lang)
+    actual_target_lang = normalize_language_command(lang_input)
+    if not actual_target_lang:
+        return "Không chuẩn hóa được ngôn ngữ đích."
 
-    return f"Đã lưu ngôn ngữ đích: {lang}"
+    user_language_prefs[user_id] = actual_target_lang
+
+    logger.info(
+        "Saved language user_id=%s input=%s target_lang=%s",
+        user_id,
+        lang_input,
+        actual_target_lang
+    )
+
+    if actual_target_lang == "zh-TW":
+        return "Đã lưu ngôn ngữ đích: zh-TW (Tiếng Trung phồn thể Đài Loan)"
+
+    return f"Đã lưu ngôn ngữ đích: {actual_target_lang}"
 
 
 def get_user_target_language(user_id: str) -> str:
@@ -197,6 +234,8 @@ def webhook():
     logger.info("Events count=%s", len(events))
 
     for event in events:
+        reply_token = event.get("replyToken")
+
         try:
             event_type = event.get("type")
             logger.info("Event type=%s", event_type)
@@ -211,15 +250,14 @@ def webhook():
             if message_type != "text":
                 continue
 
-            reply_token = event.get("replyToken")
             if not reply_token:
                 logger.warning("Missing replyToken")
                 continue
 
             source = event.get("source", {})
             user_id = source.get("userId", "unknown")
-
             incoming_text = (message.get("text") or "").strip()
+
             logger.info("Incoming text=%s | user_id=%s", incoming_text, user_id)
 
             if not incoming_text:
@@ -247,7 +285,6 @@ def webhook():
             logger.exception("Webhook processing error")
 
             try:
-                reply_token = event.get("replyToken")
                 if reply_token:
                     reply_to_line(reply_token, f"Lỗi xử lý: {str(e)}")
             except Exception:
