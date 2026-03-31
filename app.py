@@ -1,3 +1,4 @@
+app = Flask(__name__)
 def save_user_language(sheet, user_id, target_lang):
     """
     Lưu hoặc cập nhật ngôn ngữ của user vào Google Sheet.
