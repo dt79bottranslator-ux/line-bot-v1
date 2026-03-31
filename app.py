@@ -913,6 +913,94 @@ def handle_normal_message(
     clean_text = clean_input_text(text)
     print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
 
+    # ===== COST GUARD LAYER =====
+
+    # 1. TEXT LENGTH GUARD
+    if len(clean_text) > 300:
+        reply_line_message(reply_token, "Tin nhắn quá dài (>300 ký tự)")
+        print(f"[GUARD] blocked long text len={len(clean_text)}")
+        return
+
+    # 2. EMPTY SPAM GUARD
+    if clean_text.strip() == "":
+        reply_line_message(reply_token, "Tin nhắn không hợp lệ")
+        print("[GUARD] blocked empty spam")
+        return
+
+    if not clean_text:
+        ok = reply_line_message(reply_token, "Tin nhắn trống.")
+        print(f"[REPLY DEBUG] empty text result={ok}")
+        return
+
+    profile_saved = upsert_user_profile(user_id=user_id, group_id=group_id)
+    print(f"[PROFILE] upsert_before_translate={profile_saved}")
+
+    target_lang = get_user_target_lang(user_id, default_lang="en")
+    print(f"[MESSAGE FLOW] target_lang={target_lang}")
+
+    usage = increase_usage(group_id, group_id=group_id)
+    premium = is_user_premium(user_id)
+
+    print(f"[LIMIT] usage={usage} premium={premium}")
+
+    if not premium and usage > FREE_USAGE_LIMIT:
+        ok = reply_line_message(
+            reply_token,
+            f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần). Liên hệ admin để nâng cấp."
+        )
+        print(f"[REPLY DEBUG] free limit blocked result={ok}")
+        return
+
+    translated, source_lang = translate_text_with_meta(clean_text, target_lang)
+
+    if translated is None:
+        usage_saved = log_usage(
+            user_id=user_id,
+            message=clean_text,
+            source_lang="unknown",
+            target_lang=target_lang,
+        )
+        print(f"[USAGE LOG] saved_on_translate_fail={usage_saved}")
+
+        ok = reply_line_message(
+            reply_token,
+            "Dịch thất bại. Kiểm tra GOOGLE_API_KEY hoặc Google Sheet credentials."
+        )
+        print(f"[REPLY DEBUG] translate failed result={ok}")
+        return
+
+    usage_saved = log_usage(
+        user_id=user_id,
+        message=clean_text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    print(f"[USAGE LOG] usage_saved={usage_saved}")
+
+    log_saved = log_translation_event(
+        user_id=user_id,
+        source_type=source_type,
+        group_id=group_id,
+        room_id=room_id,
+        target_lang=target_lang,
+        input_text=clean_text,
+    )
+    print(f"[LOG] translation_log_saved={log_saved}")
+
+    output_text = f"[AUTO → {target_lang}]\n{translated}"
+    ok = reply_line_message(reply_token, output_text)
+    print(f"[REPLY DEBUG] normal success result={ok}")
+    user_id: str,
+    text: str,
+    reply_token: str,
+    source_type: str,
+    group_id: str,
+    room_id: str,
+):
+    print(f"[MESSAGE FLOW] raw_input_text={text}")
+    clean_text = clean_input_text(text)
+    print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
+
     if not clean_text:
         ok = reply_line_message(reply_token, "Tin nhắn trống.")
         print(f"[REPLY DEBUG] empty text result={ok}")
