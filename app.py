@@ -1091,15 +1091,29 @@ def webhook():
         if handle_short_command(user_id, text, reply_token, group_id=group_id):
             continue
 
-        if text.startswith("/lang"):
-            handle_lang_command(user_id, text, reply_token, group_id=group_id)
-            continue
+        # =========================
+# COMMAND ROUTING
+# =========================
 
-        if handle_grant_command(user_id, text, reply_token):
-            continue
+if text.startswith("/lang"):
+    handle_lang_command(user_id, text, reply_token, group_id=group_id)
+    continue
 
-        if handle_revoke_command(user_id, text, reply_token):
-            continue
+if text.startswith("/upgrade"):
+    handle_upgrade_command(user_id, reply_token)
+    continue
+
+if handle_grant_command(user_id, text, reply_token):
+    continue
+
+if handle_revoke_command(user_id, text, reply_token):
+    continue
+
+# =========================
+# NORMAL FLOW (TRANSLATE)
+# =========================
+
+handle_normal_message(user_id, text, reply_token, group_id=group_id)
 
         # NORMAL FLOW
         handle_normal_message(
