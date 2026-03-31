@@ -1,33 +1,766 @@
+# =========================================================
+# IMPORT
+# =========================================================
+import os
+import json
+import hmac
+import base64
+import hashlib
+import html
+from datetime import datetime, timezone
+
+import requests
+import gspread
+from flask import Flask, request, jsonify
+from oauth2client.service_account import ServiceAccountCredentials
+
+# =========================================================
+# APP INIT
+# =========================================================
 app = Flask(__name__)
-def save_user_language(sheet, user_id, target_lang):
-    """
-    Lưu hoặc cập nhật ngôn ngữ của user vào Google Sheet.
 
-    Cột kỳ vọng:
-    A = user_id
-    B = target_lang
-    C = updated_at
-    """
+# =========================================================
+# ENVIRONMENT VARIABLES
+# =========================================================
+LINE_CHANNEL_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
+LINE_CHANNEL_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or "").strip()
+GOOGLE_API_KEY = (os.getenv("GOOGLE_API_KEY") or "").strip()
+
+GOOGLE_SHEET_ID = (
+    os.getenv("GOOGLE_SHEET_ID")
+    or os.getenv("SPREADSHEET_ID")
+    or ""
+).strip()
+
+GOOGLE_CREDENTIALS_JSON = (
+    os.getenv("GOOGLE_CREDENTIALS_JSON")
+    or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    or ""
+).strip()
+
+# =========================================================
+# CONSTANTS
+# =========================================================
+LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+GOOGLE_TRANSLATE_URL = "https://translation.googleapis.com/language/translate/v2"
+
+USER_LANG_SHEET_NAME = "USER_LANG_MAP"
+TRANSLATION_LOG_SHEET_NAME = "TRANSLATION_LOG"
+USAGE_LOG_SHEET_NAME = "USAGE_LOG"
+
+FREE_USAGE_LIMIT = 50
+
+# =========================================================
+# BOOT LOGS
+# =========================================================
+print("[BOOT] Starting LINE bot on Render.")
+print(f"[BOOT] LINE_CHANNEL_ACCESS_TOKEN exists: {bool(LINE_CHANNEL_ACCESS_TOKEN)}")
+print(f"[BOOT] LINE_CHANNEL_SECRET exists: {bool(LINE_CHANNEL_SECRET)}")
+print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
+print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
+print(f"[BOOT] GOOGLE_CREDENTIALS_JSON exists: {bool(GOOGLE_CREDENTIALS_JSON)}")
+
+# =========================================================
+# ROOT
+# =========================================================
+@app.route("/", methods=["GET"])
+def home():
+    return "LINE webhook is live", 200
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "ok",
+        "line_token_exists": bool(LINE_CHANNEL_ACCESS_TOKEN),
+        "line_secret_exists": bool(LINE_CHANNEL_SECRET),
+        "google_api_key_exists": bool(GOOGLE_API_KEY),
+        "google_sheet_id_exists": bool(GOOGLE_SHEET_ID),
+        "google_credentials_exists": bool(GOOGLE_CREDENTIALS_JSON),
+    }), 200
+
+
+# =========================================================
+# UTILS
+# =========================================================
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def clean_input_text(text: str) -> str:
+    clean_text = (text or "").strip()
+
+    if "→" in clean_text:
+        clean_text = clean_text.split("→")[0].strip()
+
+    return clean_text
+
+
+def normalize_target_lang(raw_lang: str):
+    lang = (raw_lang or "").strip().lower()
+
+    mapping = {
+        "zh": "zh-TW",
+        "zh-tw": "zh-TW",
+        "tw": "zh-TW",
+        "en": "en",
+        "vi": "vi",
+        "ja": "ja",
+        "jp": "ja",
+        "ko": "ko",
+        "th": "th",
+        "id": "id"
+    }
+
+    return mapping.get(lang)
+
+
+# =========================================================
+# SECURITY
+# =========================================================
+def verify_signature(channel_secret: str, body: str, x_line_signature: str) -> bool:
+    if not channel_secret:
+        print("[SECURITY] LINE_CHANNEL_SECRET missing")
+        return False
+
+    if not x_line_signature:
+        print("[SECURITY] X-Line-Signature missing")
+        return False
+
+    digest = hmac.new(
+        channel_secret.encode("utf-8"),
+        body.encode("utf-8"),
+        hashlib.sha256
+    ).digest()
+
+    computed_signature = base64.b64encode(digest).decode("utf-8")
+    is_valid = hmac.compare_digest(computed_signature, x_line_signature)
+    print(f"[SECURITY] signature_valid={is_valid}")
+    return is_valid
+
+
+# =========================================================
+# LINE REPLY
+# =========================================================
+def reply_line_message(reply_token: str, text: str) -> bool:
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        print("[LINE REPLY ERROR] LINE_CHANNEL_ACCESS_TOKEN missing")
+        return False
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+    }
+
+    payload = {
+        "replyToken": reply_token,
+        "messages": [
+            {
+                "type": "text",
+                "text": text
+            }
+        ]
+    }
+
+    print(f"[LINE REPLY DEBUG] payload={json.dumps(payload, ensure_ascii=False)}")
+
     try:
-        records = sheet.get_all_records()
+        response = requests.post(
+            LINE_REPLY_URL,
+            headers=headers,
+            json=payload,
+            timeout=15
+        )
+        print(f"[LINE REPLY] status={response.status_code}")
+        print(f"[LINE REPLY] body={response.text}")
+        return response.status_code == 200
+    except Exception as exc:
+        print(f"[LINE REPLY ERROR] {str(exc)}")
+        return False
 
-        # 1) Nếu user đã tồn tại -> update
-        for idx, row in enumerate(records, start=2):  # start=2 vì dòng 1 là header
-            if str(row.get("user_id", "")).strip() == str(user_id).strip():
-                sheet.update_cell(idx, 2, target_lang)       # cột B
-                sheet.update_cell(idx, 3, get_timestamp())   # cột C
-                logger.info("Updated user_id=%s", user_id)
-                return True
 
-        # 2) Nếu user chưa tồn tại -> append dòng mới
-        sheet.append_row([
-            str(user_id).strip(),
-            str(target_lang).strip(),
-            get_timestamp()
-        ])
-        logger.info("Inserted new user_id=%s", user_id)
+# =========================================================
+# GOOGLE SHEET AUTH
+# =========================================================
+def get_gspread_client():
+    if not GOOGLE_CREDENTIALS_JSON:
+        print("[SHEET] GOOGLE_CREDENTIALS_JSON missing")
+        return None
+
+    try:
+        credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+
+        credentials = ServiceAccountCredentials.from_json_keyfile_dict(
+            credentials_dict,
+            scope
+        )
+
+        client = gspread.authorize(credentials)
+        return client
+
+    except Exception as exc:
+        print(f"[SHEET ERROR] authorize failed: {str(exc)}")
+        return None
+
+
+def get_spreadsheet():
+    if not GOOGLE_SHEET_ID:
+        print("[SHEET] GOOGLE_SHEET_ID missing")
+        return None
+
+    client = get_gspread_client()
+    if client is None:
+        return None
+
+    try:
+        return client.open_by_key(GOOGLE_SHEET_ID)
+    except Exception as exc:
+        print(f"[SHEET ERROR] open spreadsheet failed: {str(exc)}")
+        return None
+
+
+def get_user_lang_worksheet():
+    spreadsheet = get_spreadsheet()
+    if spreadsheet is None:
+        return None
+
+    try:
+        return spreadsheet.worksheet(USER_LANG_SHEET_NAME)
+    except Exception as exc:
+        print(f"[SHEET ERROR] open USER_LANG_MAP failed: {str(exc)}")
+        return None
+
+
+def get_translation_log_worksheet():
+    spreadsheet = get_spreadsheet()
+    if spreadsheet is None:
+        return None
+
+    try:
+        return spreadsheet.worksheet(TRANSLATION_LOG_SHEET_NAME)
+    except Exception as exc:
+        print(f"[SHEET ERROR] open TRANSLATION_LOG failed: {str(exc)}")
+        return None
+
+
+def get_usage_log_worksheet():
+    spreadsheet = get_spreadsheet()
+    if spreadsheet is None:
+        return None
+
+    try:
+        return spreadsheet.worksheet(USAGE_LOG_SHEET_NAME)
+    except Exception as exc:
+        print(f"[SHEET ERROR] open USAGE_LOG failed: {str(exc)}")
+        return None
+
+
+# =========================================================
+# USER LANGUAGE / USER STATE STORE
+# SHEET SCHEMA:
+# user_id | target_lang | updated_at | is_premium | usage_count
+# =========================================================
+def get_user_target_lang(user_id: str, default_lang: str = "en") -> str:
+    worksheet = get_user_lang_worksheet()
+    if worksheet is None:
+        print(f"[SHEET] fallback target_lang={default_lang}")
+        return default_lang
+
+    try:
+        records = worksheet.get_all_records()
+
+        for row in records:
+            row_user_id = str(row.get("user_id", "")).strip()
+            if row_user_id == user_id:
+                target_lang = str(row.get("target_lang", "")).strip()
+                if target_lang:
+                    print(f"[SHEET] found target_lang={target_lang} for user_id={user_id}")
+                    return target_lang
+
+        print(f"[SHEET] user_id not found, fallback target_lang={default_lang}")
+        return default_lang
+
+    except Exception as exc:
+        print(f"[SHEET ERROR] get_user_target_lang failed: {str(exc)}")
+        return default_lang
+
+
+def save_user_target_lang(user_id: str, target_lang: str) -> bool:
+    worksheet = get_user_lang_worksheet()
+    if worksheet is None:
+        return False
+
+    try:
+        values = worksheet.get_all_values()
+
+        if not values:
+            worksheet.append_row(["user_id", "target_lang", "updated_at", "is_premium", "usage_count"])
+            values = worksheet.get_all_values()
+
+        found_row_index = None
+
+        for idx, row in enumerate(values[1:], start=2):
+            current_user_id = row[0].strip() if len(row) > 0 else ""
+            if current_user_id == user_id:
+                found_row_index = idx
+                break
+
+        timestamp = now_iso()
+
+        if found_row_index:
+            current_premium = values[found_row_index - 1][3].strip() if len(values[found_row_index - 1]) > 3 else "FALSE"
+            current_usage = values[found_row_index - 1][4].strip() if len(values[found_row_index - 1]) > 4 else "0"
+
+            worksheet.update(
+                f"A{found_row_index}:E{found_row_index}",
+                [[user_id, target_lang, timestamp, current_premium or "FALSE", current_usage or "0"]]
+            )
+            print(f"[SHEET] updated row={found_row_index} user_id={user_id} target_lang={target_lang}")
+        else:
+            worksheet.append_row([user_id, target_lang, timestamp, "FALSE", "0"])
+            print(f"[SHEET] appended user_id={user_id} target_lang={target_lang}")
+
         return True
 
-    except Exception as e:
-        logger.exception("save_user_language failed: %s", e)
+    except Exception as exc:
+        print(f"[SHEET ERROR] save_user_target_lang failed: {str(exc)}")
         return False
+
+
+def increase_usage(user_id: str) -> int:
+    worksheet = get_user_lang_worksheet()
+    if worksheet is None:
+        return 0
+
+    try:
+        records = worksheet.get_all_records()
+
+        for idx, row in enumerate(records, start=2):
+            if str(row.get("user_id", "")).strip() == str(user_id).strip():
+                current = int(row.get("usage_count", 0) or 0)
+                new_value = current + 1
+                worksheet.update_cell(idx, 5, new_value)
+                print(f"[USAGE] user_id={user_id} usage_count={new_value}")
+                return new_value
+
+        print(f"[USAGE] user_id={user_id} not found when increasing usage")
+        return 0
+
+    except Exception as exc:
+        print(f"[USAGE ERROR] {str(exc)}")
+        return 0
+
+
+def is_user_premium(user_id: str) -> bool:
+    worksheet = get_user_lang_worksheet()
+    if worksheet is None:
+        return False
+
+    try:
+        records = worksheet.get_all_records()
+
+        for row in records:
+            if str(row.get("user_id", "")).strip() == str(user_id).strip():
+                value = str(row.get("is_premium", "")).strip().upper()
+                result = value == "TRUE"
+                print(f"[PREMIUM] user_id={user_id} premium={result}")
+                return result
+
+        print(f"[PREMIUM] user_id={user_id} not found, premium=False")
+        return False
+
+    except Exception as exc:
+        print(f"[PREMIUM ERROR] {str(exc)}")
+        return False
+
+
+# =========================================================
+# TRANSLATE
+# =========================================================
+def translate_text_with_meta(text: str, target_lang: str):
+    if not GOOGLE_API_KEY:
+        print("[TRANSLATE META] GOOGLE_API_KEY missing")
+        return None, "unknown"
+
+    payload = {
+        "q": text,
+        "target": target_lang,
+        "format": "text",
+        "key": GOOGLE_API_KEY
+    }
+
+    print(f"[TRANSLATE META] input_text={text}")
+    print(f"[TRANSLATE META] target_lang={target_lang}")
+
+    try:
+        response = requests.post(
+            GOOGLE_TRANSLATE_URL,
+            data=payload,
+            timeout=20
+        )
+
+        print(f"[TRANSLATE META] status={response.status_code}")
+        print(f"[TRANSLATE META] body={response.text}")
+
+        if response.status_code != 200:
+            return None, "unknown"
+
+        data = response.json()
+        translation_item = data["data"]["translations"][0]
+
+        translated = translation_item.get("translatedText", "")
+        translated = html.unescape(translated)
+
+        source_lang = translation_item.get("detectedSourceLanguage", "unknown")
+
+        print(f"[TRANSLATE META] translated_text={translated}")
+        print(f"[TRANSLATE META] detected_source_lang={source_lang}")
+
+        return translated, source_lang
+
+    except Exception as exc:
+        print(f"[TRANSLATE META ERROR] {str(exc)}")
+        return None, "unknown"
+
+
+# =========================================================
+# USAGE LOG
+# =========================================================
+def log_usage(user_id: str, message: str, source_lang: str, target_lang: str) -> bool:
+    worksheet = get_usage_log_worksheet()
+    if worksheet is None:
+        print("[USAGE LOG] USAGE_LOG unavailable")
+        return False
+
+    try:
+        values = worksheet.get_all_values()
+
+        if not values:
+            worksheet.append_row([
+                "user_id",
+                "message",
+                "source_lang",
+                "target_lang",
+                "timestamp"
+            ])
+
+        worksheet.append_row([
+            user_id or "",
+            message or "",
+            source_lang or "",
+            target_lang or "",
+            now_iso()
+        ])
+
+        print(
+            f"[USAGE LOG] saved "
+            f"user_id={user_id} "
+            f"source_lang={source_lang} "
+            f"target_lang={target_lang}"
+        )
+        return True
+
+    except Exception as exc:
+        print(f"[USAGE LOG ERROR] {str(exc)}")
+        return False
+
+
+# =========================================================
+# TRANSLATION LOG
+# =========================================================
+def log_translation_event(
+    user_id: str,
+    source_type: str,
+    group_id: str,
+    room_id: str,
+    target_lang: str,
+    input_text: str
+) -> bool:
+    worksheet = get_translation_log_worksheet()
+    if worksheet is None:
+        return False
+
+    try:
+        values = worksheet.get_all_values()
+
+        if not values:
+            worksheet.append_row([
+                "timestamp",
+                "user_id",
+                "source_type",
+                "group_id",
+                "room_id",
+                "target_lang",
+                "input_text"
+            ])
+
+        worksheet.append_row([
+            now_iso(),
+            user_id or "",
+            source_type or "",
+            group_id or "",
+            room_id or "",
+            target_lang or "",
+            input_text or ""
+        ])
+
+        print(f"[LOG] translation event saved user_id={user_id}")
+        return True
+
+    except Exception as exc:
+        print(f"[LOG ERROR] log_translation_event failed: {str(exc)}")
+        return False
+
+
+# =========================================================
+# COMMANDS
+# =========================================================
+def handle_short_command(user_id: str, text: str, reply_token: str) -> bool:
+    command_map = {
+        "/zh": "zh-TW",
+        "/en": "en",
+        "/vi": "vi",
+        "/ja": "ja",
+        "/ko": "ko",
+        "/th": "th",
+        "/id": "id"
+    }
+
+    command = (text or "").strip().lower()
+
+    if command not in command_map:
+        return False
+
+    target_lang = command_map[command]
+    saved = save_user_target_lang(user_id, target_lang)
+
+    if saved:
+        usage_saved = log_usage(
+            user_id=user_id,
+            message=text,
+            source_lang="command",
+            target_lang=target_lang
+        )
+        print(f"[USAGE LOG] short_command_saved={usage_saved}")
+
+        ok = reply_line_message(reply_token, f"Đã lưu ngôn ngữ: {target_lang}")
+        print(f"[REPLY DEBUG] short command result={ok}")
+    else:
+        ok = reply_line_message(reply_token, "Lưu ngôn ngữ thất bại. Kiểm tra kết nối Google Sheet.")
+        print(f"[REPLY DEBUG] short command fail result={ok}")
+
+    return True
+
+
+def handle_lang_command(user_id: str, text: str, reply_token: str):
+    parts = (text or "").strip().split()
+
+    if len(parts) != 2:
+        ok = reply_line_message(reply_token, "Cú pháp đúng: /lang zh")
+        print(f"[REPLY DEBUG] lang syntax fail result={ok}")
+        return
+
+    raw_lang = parts[1]
+    target_lang = normalize_target_lang(raw_lang)
+
+    if not target_lang:
+        ok = reply_line_message(reply_token, "Ngôn ngữ không hỗ trợ. Dùng: zh, en, vi, ja, ko, th, id")
+        print(f"[REPLY DEBUG] lang invalid result={ok}")
+        return
+
+    saved = save_user_target_lang(user_id, target_lang)
+
+    if saved:
+        usage_saved = log_usage(
+            user_id=user_id,
+            message=text,
+            source_lang="command",
+            target_lang=target_lang
+        )
+        print(f"[USAGE LOG] lang_command_saved={usage_saved}")
+
+        ok = reply_line_message(reply_token, f"Đã lưu ngôn ngữ: {target_lang}")
+        print(f"[REPLY DEBUG] lang command result={ok}")
+    else:
+        ok = reply_line_message(reply_token, "Lưu ngôn ngữ thất bại. Kiểm tra kết nối Google Sheet.")
+        print(f"[REPLY DEBUG] lang command fail result={ok}")
+
+
+# =========================================================
+# NORMAL MESSAGE FLOW
+# =========================================================
+def handle_normal_message(
+    user_id: str,
+    text: str,
+    reply_token: str,
+    source_type: str,
+    group_id: str,
+    room_id: str
+):
+    print(f"[MESSAGE FLOW] raw_input_text={text}")
+    clean_text = clean_input_text(text)
+    print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
+
+    if not clean_text:
+        ok = reply_line_message(reply_token, "Tin nhắn trống.")
+        print(f"[REPLY DEBUG] empty text result={ok}")
+        return
+
+    target_lang = get_user_target_lang(user_id, default_lang="en")
+    print(f"[MESSAGE FLOW] target_lang={target_lang}")
+
+    usage = increase_usage(user_id)
+    premium = is_user_premium(user_id)
+
+    print(f"[LIMIT] usage={usage} premium={premium}")
+
+    if not premium and usage > FREE_USAGE_LIMIT:
+        ok = reply_line_message(
+            reply_token,
+            f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần). Liên hệ admin để nâng cấp."
+        )
+        print(f"[REPLY DEBUG] free limit blocked result={ok}")
+        return
+
+    translated, source_lang = translate_text_with_meta(clean_text, target_lang)
+
+    if translated is None:
+        usage_saved = log_usage(
+            user_id=user_id,
+            message=clean_text,
+            source_lang="unknown",
+            target_lang=target_lang
+        )
+        print(f"[USAGE LOG] saved_on_translate_fail={usage_saved}")
+
+        ok = reply_line_message(
+            reply_token,
+            "Dịch thất bại. Kiểm tra GOOGLE_API_KEY hoặc Google Sheet credentials."
+        )
+        print(f"[REPLY DEBUG] translate failed result={ok}")
+        return
+
+    usage_saved = log_usage(
+        user_id=user_id,
+        message=clean_text,
+        source_lang=source_lang,
+        target_lang=target_lang
+    )
+    print(f"[USAGE LOG] usage_saved={usage_saved}")
+
+    log_saved = log_translation_event(
+        user_id=user_id,
+        source_type=source_type,
+        group_id=group_id,
+        room_id=room_id,
+        target_lang=target_lang,
+        input_text=clean_text
+    )
+    print(f"[LOG] translation_log_saved={log_saved}")
+
+    output_text = f"[AUTO → {target_lang}]\n{translated}"
+    ok = reply_line_message(reply_token, output_text)
+    print(f"[REPLY DEBUG] normal success result={ok}")
+
+
+# =========================================================
+# WEBHOOK
+# =========================================================
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    print("=== NEW REQUEST RECEIVED ===")
+
+    body = request.get_data(as_text=True)
+    print(f"[WEBHOOK RAW BODY] {body}")
+
+    x_line_signature = request.headers.get("X-Line-Signature", "")
+    print(f"[WEBHOOK HEADER] x_line_signature_exists={bool(x_line_signature)}")
+
+    if not verify_signature(LINE_CHANNEL_SECRET, body, x_line_signature):
+        return jsonify({"ok": False, "error": "invalid signature"}), 400
+
+    try:
+        data = request.get_json(force=True)
+        print("[WEBHOOK PARSED]")
+        print(json.dumps(data, ensure_ascii=False))
+    except Exception as exc:
+        print(f"[WEBHOOK JSON ERROR] {str(exc)}")
+        return jsonify({"ok": False, "error": "invalid json"}), 400
+
+    events = data.get("events", [])
+    print(f"[WEBHOOK] events_count={len(events)}")
+
+    for event in events:
+        event_type = event.get("type")
+        source = event.get("source", {})
+        message = event.get("message", {})
+        reply_token = event.get("replyToken")
+        user_id = source.get("userId")
+        group_id = source.get("groupId")
+        room_id = source.get("roomId")
+        source_type = source.get("type")
+        message_type = message.get("type")
+        text = (message.get("text") or "").strip()
+
+        print(
+            f"[EVENT] "
+            f'{{"event_type":"{event_type}",'
+            f'"reply_token_exists":{bool(reply_token)},'
+            f'"source_type":"{source_type}",'
+            f'"user_id":"{user_id}",'
+            f'"group_id":"{group_id}",'
+            f'"room_id":"{room_id}",'
+            f'"message_type":"{message_type}",'
+            f'"text":"{text}"}}'
+        )
+
+        if event_type != "message":
+            continue
+
+        if message_type != "text":
+            continue
+
+        if not user_id:
+            print("[MESSAGE] user_id missing")
+            if reply_token:
+                reply_line_message(reply_token, "Không lấy được user_id từ LINE event.")
+            continue
+
+        print(f"[MESSAGE] source_type={source_type}")
+        print(f"[MESSAGE] group_id={group_id}")
+        print(f"[MESSAGE] room_id={room_id}")
+        print(f"[MESSAGE] user_id={user_id}")
+        print(f"[MESSAGE] text={text}")
+
+        if handle_short_command(user_id, text, reply_token):
+            continue
+
+        if text.startswith("/lang"):
+            handle_lang_command(user_id, text, reply_token)
+            continue
+
+        handle_normal_message(
+            user_id=user_id,
+            text=text,
+            reply_token=reply_token,
+            source_type=source_type,
+            group_id=group_id,
+            room_id=room_id
+        )
+
+    return jsonify({"ok": True}), 200
+
+
+# =========================================================
+# MAIN
+# =========================================================
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "10000"))
+    print(f"[BOOT] Running on 0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
