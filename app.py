@@ -7,6 +7,7 @@ import hmac
 import base64
 import hashlib
 import html
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -51,6 +52,10 @@ USAGE_LOG_SHEET_NAME = "USAGE_LOG"
 FREE_USAGE_LIMIT = 50
 GROUP_DAILY_LIMIT = 1000
 MAX_TEXT_LENGTH = 300
+
+# ===== ANTI-SPAM MEMORY =====
+LAST_MESSAGE_TIME = {}
+COOLDOWN_SECONDS = 2
 
 USER_LANG_HEADERS = [
     "user_id",
@@ -915,6 +920,16 @@ def handle_normal_message(
     print(f"[MESSAGE FLOW] raw_input_text={text}")
     clean_text = clean_input_text(text)
     print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
+
+    # ===== COOLDOWN GUARD =====
+    current_time = time.time()
+    last_time = LAST_MESSAGE_TIME.get(user_id, 0)
+
+    if current_time - last_time < COOLDOWN_SECONDS:
+        print(f"[COOLDOWN BLOCK] user_id={user_id}")
+        return
+
+    LAST_MESSAGE_TIME[user_id] = current_time
 
     # ===== COST GUARD LAYER =====
     if len(clean_text) > MAX_TEXT_LENGTH:
