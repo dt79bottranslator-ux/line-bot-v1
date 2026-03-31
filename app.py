@@ -874,12 +874,47 @@ def webhook():
         print(f"[MESSAGE] user_id={user_id}")
         print(f"[MESSAGE] text={text}")
 
-        if handle_short_command(user_id, text, reply_token, group_id=group_id):
-            continue
+        i# COMMAND FLOW
 
-        if text.startswith("/lang"):
-            handle_lang_command(user_id, text, reply_token, group_id=group_id)
-            continue
+if handle_short_command(user_id, text, reply_token, group_id=group_id):
+    continue
+
+if text.startswith("/lang"):
+    handle_lang_command(user_id, text, reply_token, group_id=group_id)
+    continue
+
+# ====== NEW: ADMIN GRANT ======
+if text.startswith("/grant"):
+    if not is_user_admin(user_id):
+        reply_line_message(reply_token, "Bạn không có quyền admin.")
+        continue
+
+    parts = text.split()
+    if len(parts) != 2:
+        reply_line_message(reply_token, "Cú pháp: /grant USER_ID")
+        continue
+
+    target_user_id = parts[1].strip()
+
+    success = set_user_premium(target_user_id, True)
+
+    if success:
+        reply_line_message(reply_token, f"Đã cấp premium cho {target_user_id}")
+    else:
+        reply_line_message(reply_token, "Cấp premium thất bại")
+
+    continue
+# ====== END ======
+
+# NORMAL FLOW
+handle_normal_message(
+    user_id=user_id,
+    text=text,
+    reply_token=reply_token,
+    source_type=source_type,
+    group_id=group_id,
+    room_id=room_id
+)
 
         handle_normal_message(
             user_id=user_id,
