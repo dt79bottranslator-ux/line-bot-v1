@@ -750,7 +750,7 @@ def handle_normal_message(
     target_lang = get_user_target_lang(user_id, default_lang="en")
     print(f"[MESSAGE FLOW] target_lang={target_lang}")
 
-    usage = increase_usage(user_id, group_id=group_id)
+    usage = increase_usage(group_id, group_id=group_id)
     premium = is_user_premium(user_id)
 
     print(f"[LIMIT] usage={usage} premium={premium}")
