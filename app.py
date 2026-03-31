@@ -57,6 +57,7 @@ USER_LANG_HEADERS = [
     "is_premium",
     "usage_count",
     "group_id",
+    "role",
 ]
 
 # =========================================================
@@ -284,7 +285,7 @@ def get_usage_log_worksheet():
 # =========================================================
 # USER_LANG_MAP HELPERS
 # SCHEMA:
-# user_id | target_lang | updated_at | is_premium | usage_count | group_id
+# user_id | target_lang | updated_at | is_premium | usage_count | group_id | role
 # =========================================================
 def ensure_user_lang_headers(worksheet) -> bool:
     if worksheet is None:
@@ -331,6 +332,7 @@ def build_user_row(
     is_premium: str = "FALSE",
     usage_count: str = "0",
     group_id: str = "USER",
+    role: str = "",
 ):
     return [
         safe_str(user_id),
@@ -339,10 +341,16 @@ def build_user_row(
         safe_str(is_premium).upper() or "FALSE",
         safe_str(usage_count) or "0",
         safe_str(group_id) or "USER",
+        safe_str(role).lower(),
     ]
 
 
-def upsert_user_profile(user_id: str, target_lang: str = None, group_id: str = None) -> bool:
+def upsert_user_profile(
+    user_id: str,
+    target_lang: str = None,
+    group_id: str = None,
+    role: str = None,
+) -> bool:
     worksheet = get_user_lang_worksheet()
     if worksheet is None:
         return False
@@ -365,6 +373,7 @@ def upsert_user_profile(user_id: str, target_lang: str = None, group_id: str = N
             current_is_premium = current_row[3].strip() if len(current_row) > 3 else "FALSE"
             current_usage_count = current_row[4].strip() if len(current_row) > 4 else "0"
             current_group_id = current_row[5].strip() if len(current_row) > 5 else "USER"
+            current_role = current_row[6].strip() if len(current_row) > 6 else ""
 
             new_row = build_user_row(
                 user_id=user_id,
@@ -373,14 +382,16 @@ def upsert_user_profile(user_id: str, target_lang: str = None, group_id: str = N
                 is_premium=current_is_premium or "FALSE",
                 usage_count=current_usage_count or "0",
                 group_id=group_id or current_group_id or "USER",
+                role=role if role is not None else current_role,
             )
 
-            worksheet.update(f"A{found_row_index}:F{found_row_index}", [new_row])
+            worksheet.update(f"A{found_row_index}:G{found_row_index}", [new_row])
             print(
                 f"[SHEET] updated profile "
                 f"user_id={user_id} "
                 f"target_lang={new_row[1]} "
-                f"group_id={new_row[5]}"
+                f"group_id={new_row[5]} "
+                f"role={new_row[6]}"
             )
             return True
 
@@ -391,13 +402,15 @@ def upsert_user_profile(user_id: str, target_lang: str = None, group_id: str = N
             is_premium="FALSE",
             usage_count="0",
             group_id=group_id or "USER",
+            role=role or "",
         )
         worksheet.append_row(new_row)
         print(
             f"[SHEET] appended profile "
             f"user_id={user_id} "
             f"target_lang={new_row[1]} "
-            f"group_id={new_row[5]}"
+            f"group_id={new_row[5]} "
+            f"role={new_row[6]}"
         )
         return True
 
@@ -468,6 +481,7 @@ def increase_usage(user_id: str, group_id: str = "USER") -> int:
         current_is_premium = current_row[3].strip() if len(current_row) > 3 else "FALSE"
         current_usage_count = current_row[4].strip() if len(current_row) > 4 else "0"
         current_group_id = current_row[5].strip() if len(current_row) > 5 else "USER"
+        current_role = current_row[6].strip() if len(current_row) > 6 else ""
 
         new_usage_count = safe_int(current_usage_count, 0) + 1
 
@@ -478,9 +492,10 @@ def increase_usage(user_id: str, group_id: str = "USER") -> int:
             is_premium=current_is_premium or "FALSE",
             usage_count=str(new_usage_count),
             group_id=group_id or current_group_id or "USER",
+            role=current_role,
         )
 
-        worksheet.update(f"A{found_row_index}:F{found_row_index}", [new_row])
+        worksheet.update(f"A{found_row_index}:G{found_row_index}", [new_row])
         print(f"[USAGE] user_id={user_id} usage_count={new_usage_count} group_id={new_row[5]}")
         return new_usage_count
 
@@ -509,6 +524,76 @@ def is_user_premium(user_id: str) -> bool:
 
     except Exception as exc:
         print(f"[PREMIUM ERROR] {str(exc)}")
+        return False
+
+
+def is_user_admin(user_id: str) -> bool:
+    worksheet = get_user_lang_worksheet()
+    if worksheet is None:
+        return False
+
+    try:
+        records = worksheet.get_all_records()
+
+        for row in records:
+            if safe_str(row.get("user_id")) == safe_str(user_id):
+                role = safe_str(row.get("role")).lower()
+                result = role == "admin"
+                print(f"[ADMIN] user_id={user_id} admin={result}")
+                return result
+
+        print(f"[ADMIN] user_id={user_id} not found, admin=False")
+        return False
+
+    except Exception as exc:
+        print(f"[ADMIN ERROR] {str(exc)}")
+        return False
+
+
+def set_user_premium(user_id: str, premium: bool) -> bool:
+    worksheet = get_user_lang_worksheet()
+    if worksheet is None:
+        return False
+
+    try:
+        if not ensure_user_lang_headers(worksheet):
+            return False
+
+        values = get_user_lang_values(worksheet)
+        if not values:
+            return False
+
+        found_row_index = find_user_row_index(values, user_id)
+
+        if not found_row_index:
+            print(f"[PREMIUM SET] user_id not found: {user_id}")
+            return False
+
+        current_row = values[found_row_index - 1]
+
+        current_target_lang = current_row[1].strip() if len(current_row) > 1 else "en"
+        current_usage_count = current_row[4].strip() if len(current_row) > 4 else "0"
+        current_group_id = current_row[5].strip() if len(current_row) > 5 else "USER"
+        current_role = current_row[6].strip() if len(current_row) > 6 else ""
+
+        premium_text = "TRUE" if premium else "FALSE"
+
+        new_row = build_user_row(
+            user_id=user_id,
+            target_lang=current_target_lang or "en",
+            updated_at=now_iso(),
+            is_premium=premium_text,
+            usage_count=current_usage_count or "0",
+            group_id=current_group_id or "USER",
+            role=current_role,
+        )
+
+        worksheet.update(f"A{found_row_index}:G{found_row_index}", [new_row])
+        print(f"[PREMIUM SET] user_id={user_id} premium={premium_text}")
+        return True
+
+    except Exception as exc:
+        print(f"[PREMIUM SET ERROR] {str(exc)}")
         return False
 
 
@@ -724,6 +809,60 @@ def handle_lang_command(user_id: str, text: str, reply_token: str, group_id: str
         print(f"[REPLY DEBUG] lang command fail result={ok}")
 
 
+def handle_grant_command(user_id: str, text: str, reply_token: str) -> bool:
+    command_text = (text or "").strip()
+
+    if not command_text.lower().startswith("/grant"):
+        return False
+
+    if not is_user_admin(user_id):
+        reply_line_message(reply_token, "Bạn không có quyền admin.")
+        return True
+
+    parts = command_text.split()
+
+    if len(parts) != 2:
+        reply_line_message(reply_token, "Cú pháp: /grant USER_ID")
+        return True
+
+    target_user_id = parts[1].strip()
+    success = set_user_premium(target_user_id, True)
+
+    if success:
+        reply_line_message(reply_token, f"Đã cấp premium cho {target_user_id}")
+    else:
+        reply_line_message(reply_token, "Cấp premium thất bại")
+
+    return True
+
+
+def handle_revoke_command(user_id: str, text: str, reply_token: str) -> bool:
+    command_text = (text or "").strip()
+
+    if not command_text.lower().startswith("/revoke"):
+        return False
+
+    if not is_user_admin(user_id):
+        reply_line_message(reply_token, "Bạn không có quyền admin.")
+        return True
+
+    parts = command_text.split()
+
+    if len(parts) != 2:
+        reply_line_message(reply_token, "Cú pháp: /revoke USER_ID")
+        return True
+
+    target_user_id = parts[1].strip()
+    success = set_user_premium(target_user_id, False)
+
+    if success:
+        reply_line_message(reply_token, f"Đã gỡ premium cho {target_user_id}")
+    else:
+        reply_line_message(reply_token, "Gỡ premium thất bại")
+
+    return True
+
+
 # =========================================================
 # NORMAL MESSAGE FLOW
 # =========================================================
@@ -874,83 +1013,21 @@ def webhook():
         print(f"[MESSAGE] user_id={user_id}")
         print(f"[MESSAGE] text={text}")
 
-        i# COMMAND FLOW
+        # COMMAND FLOW
+        if handle_short_command(user_id, text, reply_token, group_id=group_id):
+            continue
 
-# COMMAND FLOW
+        if text.startswith("/lang"):
+            handle_lang_command(user_id, text, reply_token, group_id=group_id)
+            continue
 
-if handle_short_command(user_id, text, reply_token, group_id=group_id):
-    continue
+        if handle_grant_command(user_id, text, reply_token):
+            continue
 
-if text.startswith("/lang"):
-    handle_lang_command(user_id, text, reply_token, group_id=group_id)
-    continue
+        if handle_revoke_command(user_id, text, reply_token):
+            continue
 
-# ====== NEW: ADMIN GRANT ======
-if text.startswith("/grant"):
-    if not is_user_admin(user_id):
-        reply_line_message(reply_token, "Bạn không có quyền admin.")
-        continue
-
-    parts = text.split()
-    if len(parts) != 2:
-        reply_line_message(reply_token, "Cú pháp: /grant USER_ID")
-        continue
-
-    target_user_id = parts[1].strip()
-
-    success = set_user_premium(target_user_id, True)
-
-    if success:
-        reply_line_message(reply_token, f"Đã cấp premium cho {target_user_id}")
-    else:
-        reply_line_message(reply_token, "Cấp premium thất bại")
-
-    continue
-# ====== END ======
-
-# NORMAL FLOW
-handle_normal_message(
-    user_id=user_id,
-    text=text,
-    reply_token=reply_token,
-    source_type=source_type,
-    group_id=group_id,
-    room_id=room_id
-)
-
-# ====== NEW: ADMIN GRANT ======
-if text.strip().lower().startswith("/grant"):
-    if not is_user_admin(user_id):
-        reply_line_message(reply_token, "Bạn không có quyền admin.")
-        continue
-
-    parts = text.split()
-    if len(parts) != 2:
-        reply_line_message(reply_token, "Cú pháp: /grant USER_ID")
-        continue
-
-    target_user_id = parts[1].strip()
-
-    success = set_user_premium(target_user_id, True)
-
-    if success:
-        reply_line_message(reply_token, f"Đã cấp premium cho {target_user_id}")
-    else:
-        reply_line_message(reply_token, "Cấp premium thất bại")
-
-    continue
-# ====== END ======
-
-# NORMAL FLOW
-handle_normal_message(
-    user_id=user_id,
-    text=text,
-    reply_token=reply_token,
-    source_type=source_type,
-    group_id=group_id,
-    room_id=room_id
-)
-
+        # NORMAL FLOW
         handle_normal_message(
             user_id=user_id,
             text=text,
