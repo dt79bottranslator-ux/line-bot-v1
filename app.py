@@ -845,6 +845,28 @@ def handle_lang_command(user_id: str, text: str, reply_token: str, group_id: str
         print(f"[REPLY DEBUG] lang command fail result={ok}")
 
 
+def handle_upgrade_command(user_id: str, reply_token: str) -> bool:
+    premium = is_user_premium(user_id)
+
+    if premium:
+        ok = reply_line_message(
+            reply_token,
+            "Bạn đang ở gói Premium. Nếu cần hỗ trợ thêm, hãy liên hệ admin."
+        )
+        print(f"[REPLY DEBUG] upgrade already premium result={ok}")
+        return True
+
+    upgrade_text = (
+        "Nâng cấp Premium:\n"
+        "- Bỏ giới hạn miễn phí\n"
+        "- Ưu tiên hỗ trợ nhóm\n"
+        "- Liên hệ admin để kích hoạt"
+    )
+    ok = reply_line_message(reply_token, upgrade_text)
+    print(f"[REPLY DEBUG] upgrade command result={ok}")
+    return True
+
+
 def handle_grant_command(user_id: str, text: str, reply_token: str) -> bool:
     command_text = (text or "").strip()
 
@@ -927,6 +949,7 @@ def handle_normal_message(
 
     if current_time - last_time < COOLDOWN_SECONDS:
         print(f"[COOLDOWN BLOCK] user_id={user_id}")
+        reply_line_message(reply_token, f"Bạn gửi quá nhanh, vui lòng đợi {COOLDOWN_SECONDS} giây.")
         return
 
     LAST_MESSAGE_TIME[user_id] = current_time
@@ -1091,29 +1114,19 @@ def webhook():
         if handle_short_command(user_id, text, reply_token, group_id=group_id):
             continue
 
-        # =========================
-# COMMAND ROUTING
-# =========================
+        if text.startswith("/lang"):
+            handle_lang_command(user_id, text, reply_token, group_id=group_id)
+            continue
 
-if text.startswith("/lang"):
-    handle_lang_command(user_id, text, reply_token, group_id=group_id)
-    continue
+        if text.startswith("/upgrade"):
+            handle_upgrade_command(user_id, reply_token)
+            continue
 
-if text.startswith("/upgrade"):
-    handle_upgrade_command(user_id, reply_token)
-    continue
+        if handle_grant_command(user_id, text, reply_token):
+            continue
 
-if handle_grant_command(user_id, text, reply_token):
-    continue
-
-if handle_revoke_command(user_id, text, reply_token):
-    continue
-
-# =========================
-# NORMAL FLOW (TRANSLATE)
-# =========================
-
-handle_normal_message(user_id, text, reply_token, group_id=group_id)
+        if handle_revoke_command(user_id, text, reply_token):
+            continue
 
         # NORMAL FLOW
         handle_normal_message(
