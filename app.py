@@ -810,6 +810,41 @@ def handle_lang_command(user_id: str, text: str, reply_token: str, group_id: str
 
 
 def handle_grant_command(user_id: str, text: str, reply_token: str) -> bool:
+    print(f"[DEBUG GRANT] text={text}")
+
+    command_text = (text or "").strip()
+
+    if not command_text.lower().startswith("/grant"):
+        print("[DEBUG GRANT] not matched")
+        return False
+
+    print("[DEBUG GRANT] matched /grant")
+
+    if not is_user_admin(user_id):
+        print("[DEBUG GRANT] not admin")
+        reply_line_message(reply_token, "Bạn không có quyền admin.")
+        return True
+
+    parts = command_text.split()
+
+    if len(parts) != 2:
+        print("[DEBUG GRANT] syntax error")
+        reply_line_message(reply_token, "Cú pháp: /grant USER_ID")
+        return True
+
+    target_user_id = parts[1].strip()
+    print(f"[DEBUG GRANT] target={target_user_id}")
+
+    success = set_user_premium(target_user_id, True)
+
+    print(f"[DEBUG GRANT] success={success}")
+
+    if success:
+        reply_line_message(reply_token, f"Đã cấp premium cho {target_user_id}")
+    else:
+        reply_line_message(reply_token, "Cấp premium thất bại")
+
+    return True
     command_text = (text or "").strip()
 
     if not command_text.lower().startswith("/grant"):
