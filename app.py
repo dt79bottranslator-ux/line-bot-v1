@@ -49,6 +49,8 @@ TRANSLATION_LOG_SHEET_NAME = "TRANSLATION_LOG"
 USAGE_LOG_SHEET_NAME = "USAGE_LOG"
 
 FREE_USAGE_LIMIT = 50
+GROUP_DAILY_LIMIT = 1000
+MAX_TEXT_LENGTH = 300
 
 USER_LANG_HEADERS = [
     "user_id",
@@ -468,7 +470,11 @@ def increase_usage(user_id: str, group_id: str = "USER") -> int:
         found_row_index = find_user_row_index(values, user_id)
 
         if not found_row_index:
-            created = upsert_user_profile(user_id=user_id, target_lang="en", group_id=group_id)
+            created = upsert_user_profile(
+                user_id=user_id,
+                target_lang="en",
+                group_id=group_id,
+            )
             print(f"[USAGE] user_id not found, created_profile={created}")
             values = get_user_lang_values(worksheet)
             found_row_index = find_user_row_index(values, user_id)
@@ -501,6 +507,31 @@ def increase_usage(user_id: str, group_id: str = "USER") -> int:
 
     except Exception as exc:
         print(f"[USAGE ERROR] {str(exc)}")
+        return 0
+
+
+def get_group_usage(group_id: str) -> int:
+    worksheet = get_user_lang_worksheet()
+    if worksheet is None:
+        return 0
+
+    group_usage = 0
+
+    try:
+        values = worksheet.get_all_values()
+
+        for row in values[1:]:
+            if len(row) >= 6:
+                row_group_id = row[5].strip()
+                row_usage = safe_int(row[4], 0)
+
+                if row_group_id == group_id:
+                    group_usage += row_usage
+
+        return group_usage
+
+    except Exception as exc:
+        print(f"[GROUP GUARD ERROR] {str(exc)}")
         return 0
 
 
@@ -810,15 +841,12 @@ def handle_lang_command(user_id: str, text: str, reply_token: str, group_id: str
 
 
 def handle_grant_command(user_id: str, text: str, reply_token: str) -> bool:
-    print(f"[DEBUG GRANT] text={text}")
-
     command_text = (text or "").strip()
 
     if not command_text.lower().startswith("/grant"):
-        print("[DEBUG GRANT] not matched")
         return False
 
-    print("[DEBUG GRANT] matched /grant")
+    print(f"[DEBUG GRANT] text={command_text}")
 
     if not is_user_admin(user_id):
         print("[DEBUG GRANT] not admin")
@@ -836,32 +864,7 @@ def handle_grant_command(user_id: str, text: str, reply_token: str) -> bool:
     print(f"[DEBUG GRANT] target={target_user_id}")
 
     success = set_user_premium(target_user_id, True)
-
     print(f"[DEBUG GRANT] success={success}")
-
-    if success:
-        reply_line_message(reply_token, f"Đã cấp premium cho {target_user_id}")
-    else:
-        reply_line_message(reply_token, "Cấp premium thất bại")
-
-    return True
-    command_text = (text or "").strip()
-
-    if not command_text.lower().startswith("/grant"):
-        return False
-
-    if not is_user_admin(user_id):
-        reply_line_message(reply_token, "Bạn không có quyền admin.")
-        return True
-
-    parts = command_text.split()
-
-    if len(parts) != 2:
-        reply_line_message(reply_token, "Cú pháp: /grant USER_ID")
-        return True
-
-    target_user_id = parts[1].strip()
-    success = set_user_premium(target_user_id, True)
 
     if success:
         reply_line_message(reply_token, f"Đã cấp premium cho {target_user_id}")
@@ -914,14 +917,11 @@ def handle_normal_message(
     print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
 
     # ===== COST GUARD LAYER =====
-
-    # 1. TEXT LENGTH GUARD
-    if len(clean_text) > 300:
-        reply_line_message(reply_token, "Tin nhắn quá dài (>300 ký tự)")
+    if len(clean_text) > MAX_TEXT_LENGTH:
+        reply_line_message(reply_token, f"Tin nhắn quá dài (>{MAX_TEXT_LENGTH} ký tự)")
         print(f"[GUARD] blocked long text len={len(clean_text)}")
         return
 
-    # 2. EMPTY SPAM GUARD
     if clean_text.strip() == "":
         reply_line_message(reply_token, "Tin nhắn không hợp lệ")
         print("[GUARD] blocked empty spam")
@@ -938,84 +938,20 @@ def handle_normal_message(
     target_lang = get_user_target_lang(user_id, default_lang="en")
     print(f"[MESSAGE FLOW] target_lang={target_lang}")
 
-    usage = increase_usage(group_id, group_id=group_id)
+    usage = increase_usage(user_id, group_id=group_id)
+    group_usage = get_group_usage(group_id)
     premium = is_user_premium(user_id)
 
+    print(f"[GROUP GUARD] group_id={group_id} usage={group_usage}")
     print(f"[LIMIT] usage={usage} premium={premium}")
 
-    if not premium and usage > FREE_USAGE_LIMIT:
-        ok = reply_line_message(
+    if group_usage > GROUP_DAILY_LIMIT:
+        reply_line_message(
             reply_token,
-            f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần). Liên hệ admin để nâng cấp."
+            "Nhóm đã vượt giới hạn sử dụng hôm nay. Liên hệ admin để nâng cấp."
         )
-        print(f"[REPLY DEBUG] free limit blocked result={ok}")
+        print(f"[GROUP GUARD] BLOCKED group_id={group_id}")
         return
-
-    translated, source_lang = translate_text_with_meta(clean_text, target_lang)
-
-    if translated is None:
-        usage_saved = log_usage(
-            user_id=user_id,
-            message=clean_text,
-            source_lang="unknown",
-            target_lang=target_lang,
-        )
-        print(f"[USAGE LOG] saved_on_translate_fail={usage_saved}")
-
-        ok = reply_line_message(
-            reply_token,
-            "Dịch thất bại. Kiểm tra GOOGLE_API_KEY hoặc Google Sheet credentials."
-        )
-        print(f"[REPLY DEBUG] translate failed result={ok}")
-        return
-
-    usage_saved = log_usage(
-        user_id=user_id,
-        message=clean_text,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-    print(f"[USAGE LOG] usage_saved={usage_saved}")
-
-    log_saved = log_translation_event(
-        user_id=user_id,
-        source_type=source_type,
-        group_id=group_id,
-        room_id=room_id,
-        target_lang=target_lang,
-        input_text=clean_text,
-    )
-    print(f"[LOG] translation_log_saved={log_saved}")
-
-    output_text = f"[AUTO → {target_lang}]\n{translated}"
-    ok = reply_line_message(reply_token, output_text)
-    print(f"[REPLY DEBUG] normal success result={ok}")
-    user_id: str,
-    text: str,
-    reply_token: str,
-    source_type: str,
-    group_id: str,
-    room_id: str,
-):
-    print(f"[MESSAGE FLOW] raw_input_text={text}")
-    clean_text = clean_input_text(text)
-    print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
-
-    if not clean_text:
-        ok = reply_line_message(reply_token, "Tin nhắn trống.")
-        print(f"[REPLY DEBUG] empty text result={ok}")
-        return
-
-    profile_saved = upsert_user_profile(user_id=user_id, group_id=group_id)
-    print(f"[PROFILE] upsert_before_translate={profile_saved}")
-
-    target_lang = get_user_target_lang(user_id, default_lang="en")
-    print(f"[MESSAGE FLOW] target_lang={target_lang}")
-
-    usage = increase_usage(group_id, group_id=group_id)
-    premium = is_user_premium(user_id)
-
-    print(f"[LIMIT] usage={usage} premium={premium}")
 
     if not premium and usage > FREE_USAGE_LIMIT:
         ok = reply_line_message(
