@@ -919,7 +919,7 @@ handle_normal_message(
 )
 
 # ====== NEW: ADMIN GRANT ======
-if text.startswith("/grant"):
+if text.strip().lower().startswith("/grant"):
     if not is_user_admin(user_id):
         reply_line_message(reply_token, "Bạn không có quyền admin.")
         continue
