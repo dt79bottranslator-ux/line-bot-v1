@@ -937,41 +937,64 @@ def handle_normal_message(
     group_id: str,
     room_id: str,
 ):
-    print(f"[MESSAGE FLOW] raw_input_text={text}")
-    clean_text = clean_input_text(text)
-    print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
+    # =========================================================
+# MESSAGE FLOW
+# =========================================================
+print(f"[MESSAGE FLOW] raw_input_text={text}")
+clean_text = clean_input_text(text)
+print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
 
-    current_time = time.time()
-    last_time = LAST_MESSAGE_TIME.get(user_id, 0)
+# DEBUG identity (định danh)
+print(f"[DEBUG USER] user_id={user_id}")
+print(f"[DEBUG GROUP] group_id={group_id}")
+print(f"[DEBUG ROLE] role={role}")
 
-    if current_time - last_time < COOLDOWN_SECONDS:
-        print(f"[COOLDOWN BLOCK] user_id={user_id}")
-        reply_line_message(
-            reply_token,
-            f"Bạn gửi quá nhanh, vui lòng đợi {COOLDOWN_SECONDS} giây."
-        )
-        return
+# cooldown (bộ chặn thời gian)
+current_time = time.time()
+last_time = LAST_MESSAGE_TIME.get(user_id, 0)
 
-    LAST_MESSAGE_TIME[user_id] = current_time
+print(f"[DEBUG COOLDOWN] current_time={current_time}")
+print(f"[DEBUG COOLDOWN] last_time={last_time}")
+print(f"[DEBUG COOLDOWN] delta={current_time - last_time}")
 
-    if len(clean_text) > MAX_TEXT_LENGTH:
-        reply_line_message(
-            reply_token,
-            f"Tin nhắn quá dài (>{MAX_TEXT_LENGTH} ký tự)"
-        )
-        print(f"[GUARD] blocked long text len={len(clean_text)}")
-        return
+if current_time - last_time < COOLDOWN_SECONDS:
+    print(f"[COOLDOWN BLOCK] user_id={user_id}")
+    reply_line_message(
+        reply_token,
+        f"Bạn gửi quá nhanh, vui lòng đợi {COOLDOWN_SECONDS} giây."
+    )
+    return
 
-    if clean_text.strip() == "":
-        reply_line_message(reply_token, "Tin nhắn không hợp lệ")
-        print("[GUARD] blocked empty spam")
-        return
+LAST_MESSAGE_TIME[user_id] = current_time
+print(f"[DEBUG COOLDOWN] saved_last_message_time_for={user_id}")
 
-    if not clean_text:
-        ok = reply_line_message(reply_token, "Tin nhắn trống.")
-        print(f"[REPLY DEBUG] empty text result={ok}")
-        return
+# guard text length (chặn độ dài)
+if len(clean_text) > MAX_TEXT_LENGTH:
+    reply_line_message(
+        reply_token,
+        f"Tin nhắn quá dài (>{MAX_TEXT_LENGTH} ký tự)"
+    )
+    print(f"[GUARD] blocked long text len={len(clean_text)}")
+    return
 
+# guard empty (chặn rỗng)
+if clean_text.strip() == "":
+    reply_line_message(reply_token, "Tin nhắn không hợp lệ")
+    print("[GUARD] blocked empty spam")
+    return
+
+if not clean_text:
+    ok = reply_line_message(reply_token, "Tin nhắn trống.")
+    print(f"[REPLY DEBUG] empty text result={ok}")
+    return
+
+# =========================================================
+# chỉ khi qua hết các guard mới được translate
+# =========================================================
+print("[FLOW] passed_cooldown_and_basic_guards")
+
+# translate (dịch)
+# ... translate logic ở dưới đây
     profile_saved = upsert_user_profile(user_id=user_id, group_id=group_id)
     print(f"[PROFILE] upsert_before_translate={profile_saved}")
 
