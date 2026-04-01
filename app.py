@@ -1112,33 +1112,36 @@ def webhook():
         print(f"[MESSAGE] user_id={user_id}")
         print(f"[MESSAGE] text={text}")
 
-        # COMMAND FLOW
-        if handle_short_command(user_id, text, reply_token, group_id=group_id):
-            continue
+ # short command
+if handle_short_command(user_id, text, reply_token, group_id=group_id):
+    continue
 
-        if text.startswith("/lang"):
-            handle_lang_command(user_id, text, reply_token, group_id=group_id)
-            continue
+if text.startswith("/lang"):
+    handle_lang_command(user_id, text, reply_token, group_id=group_id)
+    continue
 
-        if text.startswith("/upgrade"):
-            handle_upgrade_command(user_id, reply_token)
-            continue
+if text.startswith("/upgrade"):
+    reply_line_message(
+        reply_token,
+        "Nâng cấp Premium:\n- Bỏ giới hạn miễn phí\n- Ưu tiên hỗ trợ nhóm\n- Liên hệ admin để kích hoạt"
+    )
+    print("[REPLY DEBUG] upgrade command result=True")
+    continue
 
-        if handle_grant_command(user_id, text, reply_token):
-            continue
+if handle_grant_command(user_id, text, reply_token):
+    continue
 
-        if handle_revoke_command(user_id, text, reply_token):
-            continue
+if handle_revoke_command(user_id, text, reply_token):
+    continue
 
-        # NORMAL FLOW
-        handle_normal_message(
-            user_id=user_id,
-            text=text,
-            reply_token=reply_token,
-            source_type=source_type,
-            group_id=group_id,
-            room_id=room_id,
-        )
+handle_normal_message(
+    user_id=user_id,
+    text=text,
+    reply_token=reply_token,
+    source_type=source_type,
+    group_id=group_id,
+    room_id=room_id,
+)
 
     return jsonify({"ok": True}), 200
 
