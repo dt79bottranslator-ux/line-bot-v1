@@ -158,11 +158,16 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 
 def normalize_id(value: Any) -> str:
-    text = str(value or "")
+    if value is None:
+        return ""
+
+    text = str(value)
     text = text.replace("\u200b", "")
     text = text.replace("\ufeff", "")
     text = text.replace("\u2060", "")
     text = text.replace("\xa0", " ")
+    text = text.replace("\n", "")
+    text = text.replace("\r", "")
     return text.strip()
 
 
