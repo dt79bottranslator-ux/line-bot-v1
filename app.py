@@ -991,13 +991,15 @@ def handle_normal_message(
         print(f"[GROUP GUARD] BLOCKED group_id={group_id}")
         return
 
-    if not premium and usage > FREE_USAGE_LIMIT:
-        ok = reply_line_message(
-            reply_token,
-            f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần). Liên hệ admin để nâng cấp."
-        )
-        print(f"[REPLY DEBUG] free limit blocked result={ok}")
-        return
+    # ===== FREE LIMIT GUARD =====
+if not premium and usage > FREE_USAGE_LIMIT:
+    ok = reply_line_message(
+        reply_token,
+        f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần).\n"
+        f"Dùng /upgrade để nâng cấp."
+    )
+    print(f"[REPLY DEBUG] free limit blocked result={ok}")
+    return
 
     translated, source_lang = translate_text_with_meta(clean_text, target_lang)
 
