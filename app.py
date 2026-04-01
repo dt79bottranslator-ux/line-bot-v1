@@ -9,6 +9,7 @@ import hashlib
 import html
 import time
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import gspread
@@ -23,7 +24,7 @@ app = Flask(__name__)
 # =========================================================
 # VERSION MARKER
 # =========================================================
-APP_VERSION = "DT79_LINE_BOT_CLEAN_V5"
+APP_VERSION = "DT79_LINE_BOT_CLEAN_V6"
 
 # =========================================================
 # ENVIRONMENT VARIABLES
@@ -89,11 +90,19 @@ TRANSLATION_LOG_HEADERS = [
     "input_text",
 ]
 
+COL_USER_ID = 0
+COL_TARGET_LANG = 1
+COL_UPDATED_AT = 2
+COL_IS_PREMIUM = 3
+COL_USAGE_COUNT = 4
+COL_GROUP_ID = 5
+COL_ROLE = 6
+
 # =========================================================
 # IN-MEMORY STATE
 # =========================================================
-LAST_MESSAGE_TIME = {}
-PROCESSED_EVENTS = {}  # event_id -> timestamp
+LAST_MESSAGE_TIME: Dict[str, float] = {}
+PROCESSED_EVENTS: Dict[str, float] = {}
 
 # =========================================================
 # BOOT LOGS
@@ -106,6 +115,7 @@ print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
 print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
 print(f"[BOOT] GOOGLE_CREDENTIALS_JSON exists: {bool(GOOGLE_CREDENTIALS_JSON)}")
 
+
 # =========================================================
 # ROOT
 # =========================================================
@@ -116,15 +126,17 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({
-        "status": "ok",
-        "app_version": APP_VERSION,
-        "line_token_exists": bool(LINE_CHANNEL_ACCESS_TOKEN),
-        "line_secret_exists": bool(LINE_CHANNEL_SECRET),
-        "google_api_key_exists": bool(GOOGLE_API_KEY),
-        "google_sheet_id_exists": bool(GOOGLE_SHEET_ID),
-        "google_credentials_exists": bool(GOOGLE_CREDENTIALS_JSON),
-    }), 200
+    return jsonify(
+        {
+            "status": "ok",
+            "app_version": APP_VERSION,
+            "line_token_exists": bool(LINE_CHANNEL_ACCESS_TOKEN),
+            "line_secret_exists": bool(LINE_CHANNEL_SECRET),
+            "google_api_key_exists": bool(GOOGLE_API_KEY),
+            "google_sheet_id_exists": bool(GOOGLE_SHEET_ID),
+            "google_credentials_exists": bool(GOOGLE_CREDENTIALS_JSON),
+        }
+    ), 200
 
 
 # =========================================================
@@ -134,15 +146,24 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def safe_str(value) -> str:
+def safe_str(value: Any) -> str:
     return str(value or "").strip()
 
 
-def safe_int(value, default: int = 0) -> int:
+def safe_int(value: Any, default: int = 0) -> int:
     try:
-        return int(value)
+        return int(str(value).strip())
     except Exception:
         return default
+
+
+def normalize_id(value: Any) -> str:
+    text = str(value or "")
+    text = text.replace("\u200b", "")
+    text = text.replace("\ufeff", "")
+    text = text.replace("\u2060", "")
+    text = text.replace("\xa0", " ")
+    return text.strip()
 
 
 def clean_input_text(text: str) -> str:
@@ -154,7 +175,7 @@ def clean_input_text(text: str) -> str:
     return clean_text
 
 
-def normalize_target_lang(raw_lang: str):
+def normalize_target_lang(raw_lang: str) -> Optional[str]:
     lang = safe_str(raw_lang).lower()
 
     mapping = {
@@ -187,8 +208,8 @@ def prune_processed_events():
 def security_log(action: str, user_id: str, group_id: str, detail: str):
     print(
         f"[SECURITY] action={action} "
-        f"user_id={safe_str(user_id)} "
-        f"group_id={safe_str(group_id)} "
+        f"user_id={normalize_id(user_id)} "
+        f"group_id={normalize_id(group_id)} "
         f"detail={detail}"
     )
 
@@ -232,12 +253,7 @@ def reply_line_message(reply_token: str, text: str) -> bool:
 
     payload = {
         "replyToken": reply_token,
-        "messages": [
-            {
-                "type": "text",
-                "text": safe_str(text),
-            }
-        ],
+        "messages": [{"type": "text", "text": safe_str(text)}],
     }
 
     print(f"[LINE REPLY DEBUG] payload={json.dumps(payload, ensure_ascii=False)}")
@@ -267,20 +283,16 @@ def get_gspread_client():
 
     try:
         credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
-
         credentials = ServiceAccountCredentials.from_json_keyfile_dict(
             credentials_dict,
             scope,
         )
-
         return gspread.authorize(credentials)
-
     except Exception as exc:
         print(f"[SHEET ERROR] authorize failed: {str(exc)}")
         return None
@@ -329,7 +341,7 @@ def get_usage_log_worksheet():
 # =========================================================
 # SHEET HELPERS
 # =========================================================
-def ensure_headers(worksheet, headers) -> bool:
+def ensure_headers(worksheet, headers: List[str]) -> bool:
     if worksheet is None:
         return False
 
@@ -337,14 +349,14 @@ def ensure_headers(worksheet, headers) -> bool:
         values = worksheet.get_all_values()
         if not values:
             worksheet.append_row(headers)
-            print(f"[SHEET] header created")
+            print("[SHEET] header created")
         return True
     except Exception as exc:
         print(f"[SHEET ERROR] ensure_headers failed: {str(exc)}")
         return False
 
 
-def get_all_values_safe(worksheet):
+def get_all_values_safe(worksheet) -> List[List[str]]:
     if worksheet is None:
         return []
 
@@ -355,28 +367,6 @@ def get_all_values_safe(worksheet):
         return []
 
 
-def get_all_records_safe(worksheet):
-    if worksheet is None:
-        return []
-
-    try:
-        return worksheet.get_all_records()
-    except Exception as exc:
-        print(f"[SHEET ERROR] get_all_records failed: {str(exc)}")
-        return []
-
-
-def find_user_row_index(values, user_id: str):
-    target_user_id = safe_str(user_id)
-
-    for idx, row in enumerate(values[1:], start=2):
-        current_user_id = row[0].strip() if len(row) > 0 else ""
-        if current_user_id == target_user_id:
-            return idx
-
-    return None
-
-
 def build_user_row(
     user_id: str,
     target_lang: str = "en",
@@ -385,16 +375,46 @@ def build_user_row(
     usage_count: str = "0",
     group_id: str = "USER",
     role: str = "",
-):
+) -> List[str]:
     return [
-        safe_str(user_id),
+        normalize_id(user_id),
         safe_str(target_lang) or "en",
         safe_str(updated_at) or now_iso(),
         safe_str(is_premium).upper() or "FALSE",
         safe_str(usage_count) or "0",
-        safe_str(group_id) or "USER",
+        normalize_id(group_id) or "USER",
         safe_str(role).lower(),
     ]
+
+
+def find_user_row_index(values: List[List[str]], user_id: str) -> Optional[int]:
+    target_user_id = normalize_id(user_id)
+
+    for idx, row in enumerate(values[1:], start=2):
+        current_user_id = normalize_id(row[COL_USER_ID] if len(row) > COL_USER_ID else "")
+        if current_user_id == target_user_id:
+            return idx
+
+    return None
+
+
+def get_row_value(row: List[str], col_index: int, default: str = "") -> str:
+    if len(row) > col_index:
+        return safe_str(row[col_index])
+    return default
+
+
+def get_user_lang_values() -> Tuple[Optional[Any], List[List[str]]]:
+    worksheet = get_user_lang_worksheet()
+    if worksheet is None:
+        print("[SHEET] USER_LANG_MAP unavailable")
+        return None, []
+
+    if not ensure_headers(worksheet, USER_LANG_HEADERS):
+        return worksheet, []
+
+    values = get_all_values_safe(worksheet)
+    return worksheet, values
 
 
 # =========================================================
@@ -402,34 +422,26 @@ def build_user_row(
 # =========================================================
 def upsert_user_profile(
     user_id: str,
-    target_lang: str = None,
-    group_id: str = None,
-    role: str = None,
+    target_lang: Optional[str] = None,
+    group_id: Optional[str] = None,
+    role: Optional[str] = None,
 ) -> bool:
-    worksheet = get_user_lang_worksheet()
-    if worksheet is None:
-        print("[SHEET] USER_LANG_MAP unavailable")
+    worksheet, values = get_user_lang_values()
+    if worksheet is None or not values:
         return False
 
     try:
-        if not ensure_headers(worksheet, USER_LANG_HEADERS):
-            return False
-
-        values = get_all_values_safe(worksheet)
-        if not values:
-            return False
-
         found_row_index = find_user_row_index(values, user_id)
         timestamp = now_iso()
 
         if found_row_index:
             current_row = values[found_row_index - 1]
 
-            current_target_lang = current_row[1].strip() if len(current_row) > 1 else "en"
-            current_is_premium = current_row[3].strip() if len(current_row) > 3 else "FALSE"
-            current_usage_count = current_row[4].strip() if len(current_row) > 4 else "0"
-            current_group_id = current_row[5].strip() if len(current_row) > 5 else "USER"
-            current_role = current_row[6].strip() if len(current_row) > 6 else ""
+            current_target_lang = get_row_value(current_row, COL_TARGET_LANG, "en")
+            current_is_premium = get_row_value(current_row, COL_IS_PREMIUM, "FALSE")
+            current_usage_count = get_row_value(current_row, COL_USAGE_COUNT, "0")
+            current_group_id = get_row_value(current_row, COL_GROUP_ID, "USER")
+            current_role = get_row_value(current_row, COL_ROLE, "")
 
             new_row = build_user_row(
                 user_id=user_id,
@@ -444,10 +456,10 @@ def upsert_user_profile(
             worksheet.update(f"A{found_row_index}:G{found_row_index}", [new_row])
             print(
                 f"[SHEET] updated profile "
-                f"user_id={user_id} "
-                f"target_lang={new_row[1]} "
-                f"group_id={new_row[5]} "
-                f"role={new_row[6]}"
+                f"user_id={new_row[COL_USER_ID]} "
+                f"target_lang={new_row[COL_TARGET_LANG]} "
+                f"group_id={new_row[COL_GROUP_ID]} "
+                f"role={new_row[COL_ROLE]}"
             )
             return True
 
@@ -463,10 +475,10 @@ def upsert_user_profile(
         worksheet.append_row(new_row)
         print(
             f"[SHEET] appended profile "
-            f"user_id={user_id} "
-            f"target_lang={new_row[1]} "
-            f"group_id={new_row[5]} "
-            f"role={new_row[6]}"
+            f"user_id={new_row[COL_USER_ID]} "
+            f"target_lang={new_row[COL_TARGET_LANG]} "
+            f"group_id={new_row[COL_GROUP_ID]} "
+            f"role={new_row[COL_ROLE]}"
         )
         return True
 
@@ -475,45 +487,56 @@ def upsert_user_profile(
         return False
 
 
-def get_user_record(user_id: str):
-    worksheet = get_user_lang_worksheet()
-    if worksheet is None:
+def get_user_row(user_id: str) -> Optional[List[str]]:
+    _, values = get_user_lang_values()
+    if not values:
         return None
 
-    try:
-        records = get_all_records_safe(worksheet)
-        target_user_id = safe_str(user_id)
-
-        for row in records:
-            if safe_str(row.get("user_id")) == target_user_id:
-                return row
-
+    found_row_index = find_user_row_index(values, user_id)
+    if not found_row_index:
         return None
 
-    except Exception as exc:
-        print(f"[SHEET ERROR] get_user_record failed: {str(exc)}")
-        return None
+    return values[found_row_index - 1]
 
 
 def get_user_target_lang(user_id: str, default_lang: str = "en") -> str:
-    row = get_user_record(user_id)
+    row = get_user_row(user_id)
     if row is None:
         print(f"[SHEET] user_id not found, fallback target_lang={default_lang}")
         return default_lang
 
-    target_lang = safe_str(row.get("target_lang"))
+    target_lang = get_row_value(row, COL_TARGET_LANG, default_lang)
     if target_lang:
-        print(f"[SHEET] found target_lang={target_lang} for user_id={user_id}")
+        print(f"[SHEET] found target_lang={target_lang} for user_id={normalize_id(user_id)}")
         return target_lang
 
     return default_lang
 
 
 def get_user_role(user_id: str) -> str:
-    row = get_user_record(user_id)
+    row = get_user_row(user_id)
     if row is None:
         return ""
-    return safe_str(row.get("role")).lower()
+    return get_row_value(row, COL_ROLE, "").lower()
+
+
+def is_user_premium(user_id: str) -> bool:
+    row = get_user_row(user_id)
+    if row is None:
+        print(f"[PREMIUM] user_id={normalize_id(user_id)} not found, premium=False")
+        return False
+
+    value = get_row_value(row, COL_IS_PREMIUM, "FALSE").upper()
+    result = value == "TRUE"
+    print(f"[PREMIUM] user_id={normalize_id(user_id)} premium={result}")
+    return result
+
+
+def is_user_admin(user_id: str) -> bool:
+    role = get_user_role(user_id)
+    result = role == "admin"
+    print(f"[ADMIN] user_id={normalize_id(user_id)} admin={result}")
+    return result
 
 
 def save_user_target_lang(user_id: str, target_lang: str, group_id: str = "USER") -> bool:
@@ -525,18 +548,11 @@ def save_user_target_lang(user_id: str, target_lang: str, group_id: str = "USER"
 
 
 def increase_usage(user_id: str, group_id: str = "USER") -> int:
-    worksheet = get_user_lang_worksheet()
-    if worksheet is None:
+    worksheet, values = get_user_lang_values()
+    if worksheet is None or not values:
         return 0
 
     try:
-        if not ensure_headers(worksheet, USER_LANG_HEADERS):
-            return 0
-
-        values = get_all_values_safe(worksheet)
-        if not values:
-            return 0
-
         found_row_index = find_user_row_index(values, user_id)
 
         if not found_row_index:
@@ -546,18 +562,22 @@ def increase_usage(user_id: str, group_id: str = "USER") -> int:
                 group_id=group_id,
             )
             print(f"[USAGE] user_id not found, created_profile={created}")
-            values = get_all_values_safe(worksheet)
+
+            worksheet, values = get_user_lang_values()
+            if worksheet is None or not values:
+                return 0
+
             found_row_index = find_user_row_index(values, user_id)
 
         if not found_row_index:
             return 0
 
         current_row = values[found_row_index - 1]
-        current_target_lang = current_row[1].strip() if len(current_row) > 1 else "en"
-        current_is_premium = current_row[3].strip() if len(current_row) > 3 else "FALSE"
-        current_usage_count = current_row[4].strip() if len(current_row) > 4 else "0"
-        current_group_id = current_row[5].strip() if len(current_row) > 5 else "USER"
-        current_role = current_row[6].strip() if len(current_row) > 6 else ""
+        current_target_lang = get_row_value(current_row, COL_TARGET_LANG, "en")
+        current_is_premium = get_row_value(current_row, COL_IS_PREMIUM, "FALSE")
+        current_usage_count = get_row_value(current_row, COL_USAGE_COUNT, "0")
+        current_group_id = get_row_value(current_row, COL_GROUP_ID, "USER")
+        current_role = get_row_value(current_row, COL_ROLE, "")
 
         new_usage_count = safe_int(current_usage_count, 0) + 1
 
@@ -572,7 +592,11 @@ def increase_usage(user_id: str, group_id: str = "USER") -> int:
         )
 
         worksheet.update(f"A{found_row_index}:G{found_row_index}", [new_row])
-        print(f"[USAGE] user_id={user_id} usage_count={new_usage_count} group_id={new_row[5]}")
+        print(
+            f"[USAGE] user_id={new_row[COL_USER_ID]} "
+            f"usage_count={new_usage_count} "
+            f"group_id={new_row[COL_GROUP_ID]}"
+        )
         return new_usage_count
 
     except Exception as exc:
@@ -581,22 +605,21 @@ def increase_usage(user_id: str, group_id: str = "USER") -> int:
 
 
 def get_group_usage(group_id: str) -> int:
-    worksheet = get_user_lang_worksheet()
-    if worksheet is None:
+    _, values = get_user_lang_values()
+    if not values:
         return 0
 
     group_usage = 0
 
     try:
-        values = get_all_values_safe(worksheet)
+        target_group_id = normalize_id(group_id)
 
         for row in values[1:]:
-            if len(row) >= 6:
-                row_group_id = safe_str(row[5])
-                row_usage = safe_int(row[4], 0)
+            row_group_id = normalize_id(get_row_value(row, COL_GROUP_ID, ""))
+            row_usage = safe_int(get_row_value(row, COL_USAGE_COUNT, "0"), 0)
 
-                if row_group_id == safe_str(group_id):
-                    group_usage += row_usage
+            if row_group_id == target_group_id:
+                group_usage += row_usage
 
         return group_usage
 
@@ -605,67 +628,51 @@ def get_group_usage(group_id: str) -> int:
         return 0
 
 
-def is_user_premium(user_id: str) -> bool:
-    row = get_user_record(user_id)
-    if row is None:
-        print(f"[PREMIUM] user_id={user_id} not found, premium=False")
-        return False
-
-    value = safe_str(row.get("is_premium")).upper()
-    result = value == "TRUE"
-    print(f"[PREMIUM] user_id={user_id} premium={result}")
-    return result
-
-
-def is_user_admin(user_id: str) -> bool:
-    role = get_user_role(user_id)
-    result = role == "admin"
-    print(f"[ADMIN] user_id={user_id} admin={result}")
-    return result
-
-
 def set_user_premium(user_id: str, premium: bool) -> bool:
-    worksheet = get_user_lang_worksheet()
-    if worksheet is None:
-        print("[PREMIUM SET] worksheet unavailable")
+    worksheet, values = get_user_lang_values()
+    if worksheet is None or not values:
+        print("[PREMIUM SET] USER_LANG_MAP unavailable")
         return False
 
     try:
-        records = get_all_records_safe(worksheet)
-        target_user_id = safe_str(user_id)
+        target_user_id = normalize_id(user_id)
 
         print(f"[PREMIUM PATCH LIVE] app_version={APP_VERSION}")
-        print(f"[PREMIUM PATCH LIVE] records_count={len(records)} target_user_id={target_user_id}")
+        print(f"[PREMIUM PATCH LIVE] values_rows={len(values)} target_user_id={target_user_id}")
 
-        for idx, row in enumerate(records, start=2):
-            row_user_id = safe_str(row.get("user_id", ""))
+        found_row_index = find_user_row_index(values, target_user_id)
+        if not found_row_index:
+            print(f"[PREMIUM SET] user_id not found: {target_user_id}")
+            return False
 
-            print(f"[PREMIUM CHECK] idx={idx} row_user_id={row_user_id}")
+        current_row = values[found_row_index - 1]
 
-            if row_user_id == target_user_id:
-                target_lang = safe_str(row.get("target_lang", "en")) or "en"
-                usage_count = safe_str(row.get("usage_count", "0")) or "0"
-                group_id = safe_str(row.get("group_id", "USER")) or "USER"
-                role = safe_str(row.get("role", ""))
+        row_user_id = normalize_id(get_row_value(current_row, COL_USER_ID, ""))
+        target_lang = get_row_value(current_row, COL_TARGET_LANG, "en") or "en"
+        usage_count = get_row_value(current_row, COL_USAGE_COUNT, "0") or "0"
+        group_id = get_row_value(current_row, COL_GROUP_ID, "USER") or "USER"
+        role = get_row_value(current_row, COL_ROLE, "")
 
-                premium_text = "TRUE" if premium else "FALSE"
+        print(
+            f"[PREMIUM COMPARE] row_user_id_repr={repr(row_user_id)} len={len(row_user_id)} "
+            f"target_user_id_repr={repr(target_user_id)} len={len(target_user_id)}"
+        )
 
-                new_row = [
-                    target_user_id,
-                    target_lang,
-                    now_iso(),
-                    premium_text,
-                    usage_count,
-                    group_id,
-                    role,
-                ]
+        premium_text = "TRUE" if premium else "FALSE"
 
-                worksheet.update(f"A{idx}:G{idx}", [new_row])
-                print(f"[PREMIUM SET] user_id={target_user_id} premium={premium_text}")
-                return True
+        new_row = [
+            target_user_id,
+            target_lang,
+            now_iso(),
+            premium_text,
+            usage_count,
+            group_id,
+            role,
+        ]
 
-        print(f"[PREMIUM SET] user_id not found: {target_user_id}")
-        return False
+        worksheet.update(f"A{found_row_index}:G{found_row_index}", [new_row])
+        print(f"[PREMIUM SET] user_id={target_user_id} premium={premium_text}")
+        return True
 
     except Exception as exc:
         print(f"[PREMIUM SET ERROR] {str(exc)}")
@@ -675,7 +682,7 @@ def set_user_premium(user_id: str, premium: bool) -> bool:
 # =========================================================
 # TRANSLATE
 # =========================================================
-def translate_text_with_meta(text: str, target_lang: str):
+def translate_text_with_meta(text: str, target_lang: str) -> Tuple[Optional[str], str]:
     if not GOOGLE_API_KEY:
         print("[TRANSLATE META] GOOGLE_API_KEY missing")
         return None, "unknown"
@@ -733,7 +740,7 @@ def log_usage(user_id: str, message: str, source_lang: str, target_lang: str) ->
             return False
 
         worksheet.append_row([
-            safe_str(user_id),
+            normalize_id(user_id),
             safe_str(message),
             safe_str(source_lang),
             safe_str(target_lang),
@@ -742,7 +749,7 @@ def log_usage(user_id: str, message: str, source_lang: str, target_lang: str) ->
 
         print(
             f"[USAGE LOG] saved "
-            f"user_id={user_id} "
+            f"user_id={normalize_id(user_id)} "
             f"source_lang={source_lang} "
             f"target_lang={target_lang}"
         )
@@ -772,15 +779,15 @@ def log_translation_event(
 
         worksheet.append_row([
             now_iso(),
-            safe_str(user_id),
+            normalize_id(user_id),
             safe_str(source_type),
-            safe_str(group_id),
-            safe_str(room_id),
+            normalize_id(group_id),
+            normalize_id(room_id),
             safe_str(target_lang),
             safe_str(input_text),
         ])
 
-        print(f"[LOG] translation event saved user_id={user_id}")
+        print(f"[LOG] translation event saved user_id={normalize_id(user_id)}")
         return True
 
     except Exception as exc:
@@ -803,7 +810,6 @@ def handle_short_command(user_id: str, text: str, reply_token: str, group_id: st
     }
 
     command = safe_str(text).lower()
-
     if command not in command_map:
         return False
 
@@ -821,7 +827,10 @@ def handle_short_command(user_id: str, text: str, reply_token: str, group_id: st
         ok = reply_line_message(reply_token, f"Đã lưu ngôn ngữ: {target_lang}")
         print(f"[REPLY DEBUG] short command result={ok}")
     else:
-        ok = reply_line_message(reply_token, "Lưu ngôn ngữ thất bại. Kiểm tra kết nối Google Sheet.")
+        ok = reply_line_message(
+            reply_token,
+            "Lưu ngôn ngữ thất bại. Kiểm tra kết nối Google Sheet."
+        )
         print(f"[REPLY DEBUG] short command fail result={ok}")
 
     return True
@@ -839,7 +848,10 @@ def handle_lang_command(user_id: str, text: str, reply_token: str, group_id: str
     target_lang = normalize_target_lang(raw_lang)
 
     if not target_lang:
-        ok = reply_line_message(reply_token, "Ngôn ngữ không hỗ trợ. Dùng: zh, en, vi, ja, ko, th, id")
+        ok = reply_line_message(
+            reply_token,
+            "Ngôn ngữ không hỗ trợ. Dùng: zh, en, vi, ja, ko, th, id"
+        )
         print(f"[REPLY DEBUG] lang invalid result={ok}")
         return
 
@@ -857,7 +869,10 @@ def handle_lang_command(user_id: str, text: str, reply_token: str, group_id: str
         ok = reply_line_message(reply_token, f"Đã lưu ngôn ngữ: {target_lang}")
         print(f"[REPLY DEBUG] lang command result={ok}")
     else:
-        ok = reply_line_message(reply_token, "Lưu ngôn ngữ thất bại. Kiểm tra kết nối Google Sheet.")
+        ok = reply_line_message(
+            reply_token,
+            "Lưu ngôn ngữ thất bại. Kiểm tra kết nối Google Sheet."
+        )
         print(f"[REPLY DEBUG] lang command fail result={ok}")
 
 
@@ -895,13 +910,12 @@ def handle_grant_command(user_id: str, text: str, reply_token: str, group_id: st
         return True
 
     parts = command_text.split()
-
     if len(parts) != 2:
         security_log("grant_denied", user_id, group_id, "syntax_error")
         reply_line_message(reply_token, "Cú pháp: /grant USER_ID")
         return True
 
-    target_user_id = safe_str(parts[1])
+    target_user_id = normalize_id(parts[1])
     success = set_user_premium(target_user_id, True)
     security_log("grant_attempt", user_id, group_id, f"target={target_user_id} success={success}")
 
@@ -925,13 +939,12 @@ def handle_revoke_command(user_id: str, text: str, reply_token: str, group_id: s
         return True
 
     parts = command_text.split()
-
     if len(parts) != 2:
         security_log("revoke_denied", user_id, group_id, "syntax_error")
         reply_line_message(reply_token, "Cú pháp: /revoke USER_ID")
         return True
 
-    target_user_id = safe_str(parts[1])
+    target_user_id = normalize_id(parts[1])
     success = set_user_premium(target_user_id, False)
     security_log("revoke_attempt", user_id, group_id, f"target={target_user_id} success={success}")
 
@@ -961,8 +974,8 @@ def handle_normal_message(
 
     print(f"[MESSAGE FLOW] raw_input_text={text}")
     print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
-    print(f"[DEBUG USER] user_id={user_id}")
-    print(f"[DEBUG GROUP] group_id={group_id}")
+    print(f"[DEBUG USER] user_id={normalize_id(user_id)}")
+    print(f"[DEBUG GROUP] group_id={normalize_id(group_id)}")
     print(f"[DEBUG ROLE] role={role}")
 
     if not user_id:
@@ -971,7 +984,7 @@ def handle_normal_message(
         return
 
     current_time = time.time()
-    last_time = LAST_MESSAGE_TIME.get(user_id, 0)
+    last_time = LAST_MESSAGE_TIME.get(normalize_id(user_id), 0)
     delta = current_time - last_time
 
     print(f"[DEBUG COOLDOWN] current_time={current_time}")
@@ -979,15 +992,15 @@ def handle_normal_message(
     print(f"[DEBUG COOLDOWN] delta={delta}")
 
     if delta < COOLDOWN_SECONDS:
-        print(f"[COOLDOWN BLOCK] user_id={user_id}")
+        print(f"[COOLDOWN BLOCK] user_id={normalize_id(user_id)}")
         reply_line_message(
             reply_token,
             f"Bạn gửi quá nhanh, vui lòng đợi {COOLDOWN_SECONDS} giây."
         )
         return
 
-    LAST_MESSAGE_TIME[user_id] = current_time
-    print(f"[DEBUG COOLDOWN] saved_last_message_time_for={user_id}")
+    LAST_MESSAGE_TIME[normalize_id(user_id)] = current_time
+    print(f"[DEBUG COOLDOWN] saved_last_message_time_for={normalize_id(user_id)}")
 
     if len(clean_text) > MAX_TEXT_LENGTH:
         reply_line_message(
@@ -1014,7 +1027,7 @@ def handle_normal_message(
     group_usage = get_group_usage(group_id)
     premium = is_user_premium(user_id)
 
-    print(f"[GROUP GUARD] group_id={group_id} usage={group_usage}")
+    print(f"[GROUP GUARD] group_id={normalize_id(group_id)} usage={group_usage}")
     print(f"[LIMIT] usage={usage} premium={premium}")
 
     if group_usage > GROUP_DAILY_LIMIT:
@@ -1022,7 +1035,7 @@ def handle_normal_message(
             reply_token,
             "Nhóm đã vượt giới hạn sử dụng hôm nay. Liên hệ admin để nâng cấp."
         )
-        print(f"[GROUP GUARD] BLOCKED group_id={group_id}")
+        print(f"[GROUP GUARD] BLOCKED group_id={normalize_id(group_id)}")
         return
 
     if not premium and usage > FREE_USAGE_LIMIT:
@@ -1109,12 +1122,12 @@ def webhook():
         message = event.get("message", {})
         reply_token = event.get("replyToken")
 
-        user_id = source.get("userId")
-        group_id = source.get("groupId") or source.get("roomId") or "USER"
-        room_id = source.get("roomId")
-        source_type = source.get("type")
-        message_type = message.get("type")
-        event_id = safe_str(message.get("id"))
+        user_id = normalize_id(source.get("userId"))
+        group_id = normalize_id(source.get("groupId") or source.get("roomId") or "USER")
+        room_id = normalize_id(source.get("roomId"))
+        source_type = safe_str(source.get("type"))
+        message_type = safe_str(message.get("type"))
+        event_id = normalize_id(message.get("id"))
         text = safe_str(message.get("text"))
 
         print(
