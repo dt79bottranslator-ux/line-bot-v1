@@ -610,45 +610,40 @@ def set_user_premium(user_id: str, premium: bool) -> bool:
         return False
 
     try:
-        if not ensure_headers(worksheet, USER_LANG_HEADERS):
-            return False
+        records = worksheet.get_all_records()
+        target_user_id = user_id.strip()
 
-        values = get_all_values_safe(worksheet)
-        if not values:
-            return False
+        for idx, row in enumerate(records, start=2):
+            row_user_id = str(row.get("user_id", "")).strip()
 
-        found_row_index = find_user_row_index(values, user_id)
+            if row_user_id == target_user_id:
+                target_lang = str(row.get("target_lang", "en")).strip() or "en"
+                usage_count = str(row.get("usage_count", "0")).strip() or "0"
+                group_id = str(row.get("group_id", "USER")).strip() or "USER"
+                role = str(row.get("role", "")).strip()
 
-        if not found_row_index:
-            print(f"[PREMIUM SET] user_id not found: {user_id}")
-            return False
+                premium_text = "TRUE" if premium else "FALSE"
 
-        current_row = values[found_row_index - 1]
-        current_target_lang = current_row[1].strip() if len(current_row) > 1 else "en"
-        current_usage_count = current_row[4].strip() if len(current_row) > 4 else "0"
-        current_group_id = current_row[5].strip() if len(current_row) > 5 else "USER"
-        current_role = current_row[6].strip() if len(current_row) > 6 else ""
+                new_row = [
+                    target_user_id,
+                    target_lang,
+                    now_iso(),
+                    premium_text,
+                    usage_count,
+                    group_id,
+                    role,
+                ]
 
-        premium_text = "TRUE" if premium else "FALSE"
+                worksheet.update(f"A{idx}:G{idx}", [new_row])
+                print(f"[PREMIUM SET] user_id={target_user_id} premium={premium_text}")
+                return True
 
-        new_row = build_user_row(
-            user_id=user_id,
-            target_lang=current_target_lang or "en",
-            updated_at=now_iso(),
-            is_premium=premium_text,
-            usage_count=current_usage_count or "0",
-            group_id=current_group_id or "USER",
-            role=current_role,
-        )
-
-        worksheet.update(f"A{found_row_index}:G{found_row_index}", [new_row])
-        print(f"[PREMIUM SET] user_id={user_id} premium={premium_text}")
-        return True
+        print(f"[PREMIUM SET] user_id not found: {target_user_id}")
+        return False
 
     except Exception as exc:
         print(f"[PREMIUM SET ERROR] {str(exc)}")
         return False
-
 
 # =========================================================
 # TRANSLATE
