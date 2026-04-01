@@ -24,7 +24,7 @@ app = Flask(__name__)
 # =========================================================
 # VERSION MARKER
 # =========================================================
-APP_VERSION = "DT79_LINE_BOT_CLEAN_V7"
+APP_VERSION = "DT79_LINE_BOT_CLEAN_V8"
 
 # =========================================================
 # ENVIRONMENT VARIABLES
@@ -342,7 +342,7 @@ def ensure_headers(worksheet, headers: List[str]) -> bool:
         return False
 
     try:
-        values = worksheet.get_all_values()
+        values = worksheet.get("A1:G1000")
         if not values:
             worksheet.append_row(headers)
             print("[SHEET] header created")
@@ -357,7 +357,7 @@ def get_all_values_safe(worksheet) -> List[List[str]]:
         return []
 
     try:
-        return worksheet.get_all_values()
+        return worksheet.get("A1:G1000")
     except Exception as exc:
         print(f"[SHEET ERROR] get_all_values failed: {str(exc)}")
         return []
@@ -383,21 +383,34 @@ def build_user_row(
     ]
 
 
-def find_user_row_index(values: List[List[str]], user_id: str) -> Optional[int]:
-    target_user_id = normalize_id(user_id)
-
-    for idx, row in enumerate(values[1:], start=2):
-        current_user_id = normalize_id(row[COL_USER_ID] if len(row) > COL_USER_ID else "")
-        if current_user_id == target_user_id:
-            return idx
-
-    return None
-
-
 def get_row_value(row: List[str], col_index: int, default: str = "") -> str:
     if len(row) > col_index:
         return safe_str(row[col_index])
     return default
+
+
+def find_user_row_index(values: List[List[str]], user_id: str) -> Optional[int]:
+    target_user_id = normalize_id(user_id)
+
+    print(f"[FIND USER] target={repr(target_user_id)} total_rows={len(values)}")
+
+    for idx, row in enumerate(values):
+        if idx == 0:
+            continue
+
+        row_user_id = normalize_id(row[COL_USER_ID] if len(row) > COL_USER_ID else "")
+        print(
+            f"[COMPARE] row={idx + 1} "
+            f"sheet={repr(row_user_id)} "
+            f"target={repr(target_user_id)}"
+        )
+
+        if row_user_id == target_user_id:
+            print(f"[MATCH FOUND] row_index={idx + 1}")
+            return idx + 1
+
+    print("[MATCH FAILED]")
+    return None
 
 
 def get_user_lang_values() -> Tuple[Optional[Any], List[List[str]]]:
@@ -632,14 +645,13 @@ def set_user_premium(user_id: str, premium: bool) -> bool:
 
     try:
         target_user_id = normalize_id(user_id)
-
         found_row_index = find_user_row_index(values, target_user_id)
+
         if not found_row_index:
             print(f"[PREMIUM SET] user_id not found: {target_user_id}")
             return False
 
         current_row = values[found_row_index - 1]
-
         target_lang = get_row_value(current_row, COL_TARGET_LANG, "en") or "en"
         usage_count = get_row_value(current_row, COL_USAGE_COUNT, "0") or "0"
         group_id = get_row_value(current_row, COL_GROUP_ID, "USER") or "USER"
@@ -852,7 +864,6 @@ def handle_lang_command(user_id: str, text: str, reply_token: str, group_id: str
             target_lang=target_lang,
         )
         print(f"[USAGE LOG] lang_command_saved={usage_saved}")
-
         ok = reply_line_message(reply_token, f"Đã lưu ngôn ngữ: {target_lang}")
         print(f"[REPLY DEBUG] lang command result={ok}")
     else:
