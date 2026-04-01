@@ -952,14 +952,20 @@ def handle_normal_message(
 
     if current_time - last_time < COOLDOWN_SECONDS:
         print(f"[COOLDOWN BLOCK] user_id={user_id}")
-        reply_line_message(reply_token, f"Bạn gửi quá nhanh, vui lòng đợi {COOLDOWN_SECONDS} giây.")
+        reply_line_message(
+            reply_token,
+            f"Bạn gửi quá nhanh, vui lòng đợi {COOLDOWN_SECONDS} giây."
+        )
         return
 
     LAST_MESSAGE_TIME[user_id] = current_time
 
-    # ===== COST GUARD LAYER =====
+    # ===== COST GUARD =====
     if len(clean_text) > MAX_TEXT_LENGTH:
-        reply_line_message(reply_token, f"Tin nhắn quá dài (>{MAX_TEXT_LENGTH} ký tự)")
+        reply_line_message(
+            reply_token,
+            f"Tin nhắn quá dài (>{MAX_TEXT_LENGTH} ký tự)"
+        )
         print(f"[GUARD] blocked long text len={len(clean_text)}")
         return
 
@@ -986,6 +992,7 @@ def handle_normal_message(
     print(f"[GROUP GUARD] group_id={group_id} usage={group_usage}")
     print(f"[LIMIT] usage={usage} premium={premium}")
 
+    # ===== GROUP GUARD =====
     if group_usage > GROUP_DAILY_LIMIT:
         reply_line_message(
             reply_token,
@@ -996,13 +1003,11 @@ def handle_normal_message(
 
     # ===== FREE LIMIT GUARD =====
     if not premium and usage > FREE_USAGE_LIMIT:
-        ok = reply_line_message(
+        reply_line_message(
             reply_token,
-            f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần).
-"
-            f"Dùng /upgrade để nâng cấp."
+            f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần).\nLiên hệ admin để nâng cấp."
         )
-        print(f"[REPLY DEBUG] free limit blocked result={ok}")
+        print("[LIMIT BLOCK] free user exceeded")
         return
 
     translated, source_lang = translate_text_with_meta(clean_text, target_lang)
@@ -1041,8 +1046,7 @@ def handle_normal_message(
     )
     print(f"[LOG] translation_log_saved={log_saved}")
 
-    output_text = f"[AUTO → {target_lang}]
-{translated}"
+    output_text = f"[AUTO → {target_lang}]\n{translated}"
     ok = reply_line_message(reply_token, output_text)
     print(f"[REPLY DEBUG] normal success result={ok}")
 
