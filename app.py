@@ -21,6 +21,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 app = Flask(__name__)
 
 # =========================================================
+# VERSION MARKER
+# =========================================================
+APP_VERSION = "DT79_LINE_BOT_CLEAN_V5"
+
+# =========================================================
 # ENVIRONMENT VARIABLES
 # =========================================================
 LINE_CHANNEL_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
@@ -93,13 +98,13 @@ PROCESSED_EVENTS = {}  # event_id -> timestamp
 # =========================================================
 # BOOT LOGS
 # =========================================================
+print(f"[BOOT] APP_VERSION={APP_VERSION}")
 print("[BOOT] Starting LINE bot on Render.")
 print(f"[BOOT] LINE_CHANNEL_ACCESS_TOKEN exists: {bool(LINE_CHANNEL_ACCESS_TOKEN)}")
 print(f"[BOOT] LINE_CHANNEL_SECRET exists: {bool(LINE_CHANNEL_SECRET)}")
 print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
 print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
 print(f"[BOOT] GOOGLE_CREDENTIALS_JSON exists: {bool(GOOGLE_CREDENTIALS_JSON)}")
-
 
 # =========================================================
 # ROOT
@@ -113,6 +118,7 @@ def home():
 def health():
     return jsonify({
         "status": "ok",
+        "app_version": APP_VERSION,
         "line_token_exists": bool(LINE_CHANNEL_ACCESS_TOKEN),
         "line_secret_exists": bool(LINE_CHANNEL_SECRET),
         "google_api_key_exists": bool(GOOGLE_API_KEY),
@@ -273,8 +279,7 @@ def get_gspread_client():
             scope,
         )
 
-        client = gspread.authorize(credentials)
-        return client
+        return gspread.authorize(credentials)
 
     except Exception as exc:
         print(f"[SHEET ERROR] authorize failed: {str(exc)}")
@@ -332,7 +337,7 @@ def ensure_headers(worksheet, headers) -> bool:
         values = worksheet.get_all_values()
         if not values:
             worksheet.append_row(headers)
-            print(f"[SHEET] header created: {headers}")
+            print(f"[SHEET] header created")
         return True
     except Exception as exc:
         print(f"[SHEET ERROR] ensure_headers failed: {str(exc)}")
@@ -350,12 +355,25 @@ def get_all_values_safe(worksheet):
         return []
 
 
+def get_all_records_safe(worksheet):
+    if worksheet is None:
+        return []
+
+    try:
+        return worksheet.get_all_records()
+    except Exception as exc:
+        print(f"[SHEET ERROR] get_all_records failed: {str(exc)}")
+        return []
+
+
 def find_user_row_index(values, user_id: str):
     target_user_id = safe_str(user_id)
+
     for idx, row in enumerate(values[1:], start=2):
         current_user_id = row[0].strip() if len(row) > 0 else ""
         if current_user_id == target_user_id:
             return idx
+
     return None
 
 
@@ -390,6 +408,7 @@ def upsert_user_profile(
 ) -> bool:
     worksheet = get_user_lang_worksheet()
     if worksheet is None:
+        print("[SHEET] USER_LANG_MAP unavailable")
         return False
 
     try:
@@ -462,7 +481,7 @@ def get_user_record(user_id: str):
         return None
 
     try:
-        records = worksheet.get_all_records()
+        records = get_all_records_safe(worksheet)
         target_user_id = safe_str(user_id)
 
         for row in records:
@@ -470,6 +489,7 @@ def get_user_record(user_id: str):
                 return row
 
         return None
+
     except Exception as exc:
         print(f"[SHEET ERROR] get_user_record failed: {str(exc)}")
         return None
@@ -611,21 +631,22 @@ def set_user_premium(user_id: str, premium: bool) -> bool:
         return False
 
     try:
-        records = worksheet.get_all_records()
-        target_user_id = user_id.strip()
+        records = get_all_records_safe(worksheet)
+        target_user_id = safe_str(user_id)
 
+        print(f"[PREMIUM PATCH LIVE] app_version={APP_VERSION}")
         print(f"[PREMIUM PATCH LIVE] records_count={len(records)} target_user_id={target_user_id}")
 
         for idx, row in enumerate(records, start=2):
-            row_user_id = str(row.get("user_id", "")).strip()
+            row_user_id = safe_str(row.get("user_id", ""))
 
             print(f"[PREMIUM CHECK] idx={idx} row_user_id={row_user_id}")
 
             if row_user_id == target_user_id:
-                target_lang = str(row.get("target_lang", "en")).strip() or "en"
-                usage_count = str(row.get("usage_count", "0")).strip() or "0"
-                group_id = str(row.get("group_id", "USER")).strip() or "USER"
-                role = str(row.get("role", "")).strip()
+                target_lang = safe_str(row.get("target_lang", "en")) or "en"
+                usage_count = safe_str(row.get("usage_count", "0")) or "0"
+                group_id = safe_str(row.get("group_id", "USER")) or "USER"
+                role = safe_str(row.get("role", ""))
 
                 premium_text = "TRUE" if premium else "FALSE"
 
@@ -649,6 +670,8 @@ def set_user_premium(user_id: str, premium: bool) -> bool:
     except Exception as exc:
         print(f"[PREMIUM SET ERROR] {str(exc)}")
         return False
+
+
 # =========================================================
 # TRANSLATE
 # =========================================================
