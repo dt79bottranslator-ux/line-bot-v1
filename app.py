@@ -607,14 +607,19 @@ def is_user_admin(user_id: str) -> bool:
 def set_user_premium(user_id: str, premium: bool) -> bool:
     worksheet = get_user_lang_worksheet()
     if worksheet is None:
+        print("[PREMIUM SET] worksheet unavailable")
         return False
 
     try:
         records = worksheet.get_all_records()
         target_user_id = user_id.strip()
 
+        print(f"[PREMIUM PATCH LIVE] records_count={len(records)} target_user_id={target_user_id}")
+
         for idx, row in enumerate(records, start=2):
             row_user_id = str(row.get("user_id", "")).strip()
+
+            print(f"[PREMIUM CHECK] idx={idx} row_user_id={row_user_id}")
 
             if row_user_id == target_user_id:
                 target_lang = str(row.get("target_lang", "en")).strip() or "en"
@@ -644,7 +649,6 @@ def set_user_premium(user_id: str, premium: bool) -> bool:
     except Exception as exc:
         print(f"[PREMIUM SET ERROR] {str(exc)}")
         return False
-
 # =========================================================
 # TRANSLATE
 # =========================================================
