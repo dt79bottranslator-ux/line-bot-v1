@@ -24,7 +24,7 @@ app = Flask(__name__)
 # =========================================================
 # VERSION MARKER
 # =========================================================
-APP_VERSION = "DT79_LINE_BOT_CLEAN_V6"
+APP_VERSION = "DT79_LINE_BOT_CLEAN_V7"
 
 # =========================================================
 # ENVIRONMENT VARIABLES
@@ -168,16 +168,13 @@ def normalize_id(value: Any) -> str:
 
 def clean_input_text(text: str) -> str:
     clean_text = safe_str(text)
-
     if "→" in clean_text:
         clean_text = clean_text.split("→")[0].strip()
-
     return clean_text
 
 
 def normalize_target_lang(raw_lang: str) -> Optional[str]:
     lang = safe_str(raw_lang).lower()
-
     mapping = {
         "zh": "zh-TW",
         "zh-tw": "zh-TW",
@@ -190,7 +187,6 @@ def normalize_target_lang(raw_lang: str) -> Optional[str]:
         "th": "th",
         "id": "id",
     }
-
     return mapping.get(lang)
 
 
@@ -637,9 +633,6 @@ def set_user_premium(user_id: str, premium: bool) -> bool:
     try:
         target_user_id = normalize_id(user_id)
 
-        print(f"[PREMIUM PATCH LIVE] app_version={APP_VERSION}")
-        print(f"[PREMIUM PATCH LIVE] values_rows={len(values)} target_user_id={target_user_id}")
-
         found_row_index = find_user_row_index(values, target_user_id)
         if not found_row_index:
             print(f"[PREMIUM SET] user_id not found: {target_user_id}")
@@ -647,16 +640,10 @@ def set_user_premium(user_id: str, premium: bool) -> bool:
 
         current_row = values[found_row_index - 1]
 
-        row_user_id = normalize_id(get_row_value(current_row, COL_USER_ID, ""))
         target_lang = get_row_value(current_row, COL_TARGET_LANG, "en") or "en"
         usage_count = get_row_value(current_row, COL_USAGE_COUNT, "0") or "0"
         group_id = get_row_value(current_row, COL_GROUP_ID, "USER") or "USER"
         role = get_row_value(current_row, COL_ROLE, "")
-
-        print(
-            f"[PREMIUM COMPARE] row_user_id_repr={repr(row_user_id)} len={len(row_user_id)} "
-            f"target_user_id_repr={repr(target_user_id)} len={len(target_user_id)}"
-        )
 
         premium_text = "TRUE" if premium else "FALSE"
 
@@ -984,7 +971,8 @@ def handle_normal_message(
         return
 
     current_time = time.time()
-    last_time = LAST_MESSAGE_TIME.get(normalize_id(user_id), 0)
+    normalized_user_id = normalize_id(user_id)
+    last_time = LAST_MESSAGE_TIME.get(normalized_user_id, 0)
     delta = current_time - last_time
 
     print(f"[DEBUG COOLDOWN] current_time={current_time}")
@@ -992,15 +980,15 @@ def handle_normal_message(
     print(f"[DEBUG COOLDOWN] delta={delta}")
 
     if delta < COOLDOWN_SECONDS:
-        print(f"[COOLDOWN BLOCK] user_id={normalize_id(user_id)}")
+        print(f"[COOLDOWN BLOCK] user_id={normalized_user_id}")
         reply_line_message(
             reply_token,
             f"Bạn gửi quá nhanh, vui lòng đợi {COOLDOWN_SECONDS} giây."
         )
         return
 
-    LAST_MESSAGE_TIME[normalize_id(user_id)] = current_time
-    print(f"[DEBUG COOLDOWN] saved_last_message_time_for={normalize_id(user_id)}")
+    LAST_MESSAGE_TIME[normalized_user_id] = current_time
+    print(f"[DEBUG COOLDOWN] saved_last_message_time_for={normalized_user_id}")
 
     if len(clean_text) > MAX_TEXT_LENGTH:
         reply_line_message(
