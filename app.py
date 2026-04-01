@@ -1117,7 +1117,7 @@ def webhook():
         print(f"[MESSAGE] user_id={user_id}")
         print(f"[MESSAGE] text={text}")
 
-        # short command
+                # short command
         if handle_short_command(user_id, text, reply_token, group_id=group_id):
             continue
 
@@ -1126,7 +1126,11 @@ def webhook():
             continue
 
         if text.startswith("/upgrade"):
-            handle_upgrade_command(user_id, reply_token)
+            reply_line_message(
+                reply_token,
+                "Nâng cấp Premium:\n- Bỏ giới hạn miễn phí\n- Ưu tiên hỗ trợ nhóm\n- Liên hệ admin để kích hoạt"
+            )
+            print("[REPLY DEBUG] upgrade command result=True")
             continue
 
         if handle_grant_command(user_id, text, reply_token):
