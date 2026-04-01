@@ -1,12 +1,10 @@
 import os
 import json
-import hmac
-import base64
-import hashlib
 from datetime import datetime, timezone
-from typing import Any, Optional, List
+from typing import Any, List, Optional
 
 import gspread
+import requests
 from flask import Flask, request, abort
 from oauth2client.service_account import ServiceAccountCredentials
 from linebot import LineBotApi, WebhookHandler
@@ -19,10 +17,13 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 app = Flask(__name__)
 
 # =========================================================
-# ENVIRONMENT VARIABLES
+# ENV
 # =========================================================
+APP_VERSION = "DT79_LINE_BOT_PRACTICAL_CLEAN_V1"
+
 LINE_CHANNEL_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
 LINE_CHANNEL_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or "").strip()
+GOOGLE_API_KEY = (os.getenv("GOOGLE_API_KEY") or "").strip()
 GOOGLE_SHEET_ID = (os.getenv("GOOGLE_SHEET_ID") or "").strip()
 GOOGLE_CREDENTIALS_JSON = (
     os.getenv("GOOGLE_CREDENTIALS_JSON")
@@ -30,11 +31,18 @@ GOOGLE_CREDENTIALS_JSON = (
     or ""
 ).strip()
 
-# Admin UID:
-# Ưu tiên đọc từ ADMIN_LIST trong env, ngăn cách bằng dấu phẩy.
-# Nếu chưa set env, tạm dùng UID admin hiện tại của bạn.
+# Admin list:
+# Có thể set nhiều UID, ngăn cách bằng dấu phẩy
+# Ví dụ:
+# ADMIN_LIST=Uxxx,Uyyy
 DEFAULT_ADMIN_UID = "U83c6ce008a35ef17edaff25ac003370"
 ADMIN_LIST_RAW = (os.getenv("ADMIN_LIST") or DEFAULT_ADMIN_UID).strip()
+
+# =========================================================
+# CONSTANTS
+# =========================================================
+LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+GOOGLE_TRANSLATE_URL = "https://translation.googleapis.com/language/translate/v2"
 
 USER_LANG_SHEET_NAME = "USER_LANG_MAP"
 
@@ -52,33 +60,59 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # =========================================================
 # BOOT LOG
 # =========================================================
+print(f"[BOOT] APP_VERSION={APP_VERSION}")
 print("[BOOT] Starting LINE bot")
 print(f"[BOOT] LINE_CHANNEL_ACCESS_TOKEN exists: {bool(LINE_CHANNEL_ACCESS_TOKEN)}")
 print(f"[BOOT] LINE_CHANNEL_SECRET exists: {bool(LINE_CHANNEL_SECRET)}")
+print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
 print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
 print(f"[BOOT] GOOGLE_CREDENTIALS_JSON exists: {bool(GOOGLE_CREDENTIALS_JSON)}")
 print(f"[BOOT] ADMIN_LIST_RAW={ADMIN_LIST_RAW}")
 
 # =========================================================
-# UTILS
+# CORE UTILS
 # =========================================================
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
 def normalize_id(value: Any) -> str:
     if value is None:
         return ""
+
     text = str(value)
-    text = text.replace("\u200b", "")
-    text = text.replace("\ufeff", "")
-    text = text.replace("\u2060", "")
-    text = text.replace("\xa0", " ")
+    text = text.replace("\u200b", "")   # zero-width space
+    text = text.replace("\ufeff", "")   # BOM
+    text = text.replace("\u2060", "")   # word joiner
+    text = text.replace("\xa0", " ")    # non-breaking space
     text = text.replace("\n", "")
     text = text.replace("\r", "")
     return text.strip()
 
+
+def safe_str(value: Any) -> str:
+    return str(value or "").strip()
+
+
 def get_admin_list() -> List[str]:
     return [normalize_id(x) for x in ADMIN_LIST_RAW.split(",") if normalize_id(x)]
+
+
+def normalize_target_lang(raw_lang: str) -> Optional[str]:
+    mapping = {
+        "zh": "zh-TW",
+        "zh-tw": "zh-TW",
+        "tw": "zh-TW",
+        "en": "en",
+        "vi": "vi",
+        "ja": "ja",
+        "jp": "ja",
+        "ko": "ko",
+        "th": "th",
+        "id": "id",
+    }
+    return mapping.get(safe_str(raw_lang).lower())
+
 
 # =========================================================
 # GOOGLE SHEET
@@ -104,7 +138,8 @@ def get_gspread_client():
         print(f"[SHEET ERROR] authorize failed: {str(exc)}")
         return None
 
-def get_worksheet(name: str):
+
+def get_worksheet(sheet_name: str):
     if not GOOGLE_SHEET_ID:
         print("[SHEET ERROR] GOOGLE_SHEET_ID missing")
         return None
@@ -115,13 +150,21 @@ def get_worksheet(name: str):
 
     try:
         spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
-        return spreadsheet.worksheet(name)
+        worksheet = spreadsheet.worksheet(sheet_name)
+        return worksheet
     except Exception as exc:
         print(f"[SHEET ERROR] open worksheet failed: {str(exc)}")
         return None
 
+
+def get_row_value(row: List[str], col_index: int, default: str = "") -> str:
+    if len(row) > col_index:
+        return safe_str(row[col_index])
+    return default
+
+
 def find_user_row_index(worksheet, user_id: str) -> Optional[int]:
-    target = normalize_id(user_id)
+    target_user_id = normalize_id(user_id)
 
     if worksheet is None:
         print("[FIND USER] worksheet=None")
@@ -129,7 +172,7 @@ def find_user_row_index(worksheet, user_id: str) -> Optional[int]:
 
     try:
         values = worksheet.get_all_values()
-        print(f"[FIND USER] target={repr(target)} total_rows={len(values)}")
+        print(f"[FIND USER] target={repr(target_user_id)} total_rows={len(values)}")
 
         for idx, row in enumerate(values):
             if idx == 0:
@@ -142,10 +185,10 @@ def find_user_row_index(worksheet, user_id: str) -> Optional[int]:
                 f"[COMPARE] row={idx + 1} "
                 f"sheet_raw={repr(raw_sheet_id)} "
                 f"sheet_norm={repr(row_user_id)} "
-                f"target={repr(target)}"
+                f"target={repr(target_user_id)}"
             )
 
-            if row_user_id == target:
+            if row_user_id == target_user_id:
                 print(f"[MATCH FOUND] row_index={idx + 1}")
                 return idx + 1
 
@@ -156,67 +199,212 @@ def find_user_row_index(worksheet, user_id: str) -> Optional[int]:
         print(f"[FIND USER ERROR] {str(exc)}")
         return None
 
-def set_user_premium(target_uid: str, status: bool = True) -> bool:
-    print(f"[PREMIUM SET] target_uid={repr(normalize_id(target_uid))} status={status}")
 
+def get_user_row(user_id: str) -> Optional[List[str]]:
+    ws = get_worksheet(USER_LANG_SHEET_NAME)
+    if ws is None:
+        return None
+
+    row_index = find_user_row_index(ws, user_id)
+    if not row_index:
+        return None
+
+    try:
+        return ws.row_values(row_index)
+    except Exception as exc:
+        print(f"[SHEET ERROR] row_values failed: {str(exc)}")
+        return None
+
+
+def get_user_role(user_id: str) -> str:
+    row = get_user_row(user_id)
+    if row is None:
+        print("[ROLE DEBUG] row=None")
+        return ""
+
+    raw_role = get_row_value(row, COL_ROLE, "")
+    role = normalize_id(raw_role).lower()
+    print(f"[ROLE DEBUG] raw={repr(raw_role)} normalized={repr(role)}")
+    return role
+
+
+def is_user_admin(user_id: str) -> bool:
+    user_id_norm = normalize_id(user_id)
+
+    # Ưu tiên env admin list
+    admin_list = get_admin_list()
+    if user_id_norm in admin_list:
+        print(f"[ADMIN] user_id={repr(user_id_norm)} admin=True source=env")
+        return True
+
+    # Fallback: đọc role trong sheet
+    role = get_user_role(user_id_norm)
+    result = role == "admin"
+    print(f"[ADMIN] user_id={repr(user_id_norm)} role={repr(role)} admin={result} source=sheet")
+    return result
+
+
+def set_user_premium(user_id: str, premium: bool) -> bool:
     ws = get_worksheet(USER_LANG_SHEET_NAME)
     if ws is None:
         print("[PREMIUM SET] worksheet unavailable")
         return False
 
     try:
-        row_index = find_user_row_index(ws, target_uid)
+        target_user_id = normalize_id(user_id)
+        row_index = find_user_row_index(ws, target_user_id)
+
         if not row_index:
-            print(f"[PREMIUM SET] user_id not found: {normalize_id(target_uid)}")
+            print(f"[PREMIUM SET] user_id not found: {target_user_id}")
             return False
 
-        premium_text = "TRUE" if status else "FALSE"
+        current_row = ws.row_values(row_index)
 
-        ws.update_cell(row_index, COL_IS_PREMIUM + 1, premium_text)
-        ws.update_cell(row_index, COL_UPDATED_AT + 1, now_iso())
+        target_lang = get_row_value(current_row, COL_TARGET_LANG, "en") or "en"
+        usage_count = get_row_value(current_row, COL_USAGE_COUNT, "0") or "0"
+        group_id = get_row_value(current_row, COL_GROUP_ID, "USER") or "USER"
+        role = get_row_value(current_row, COL_ROLE, "")
 
-        print(
-            f"[PREMIUM SET] row={row_index} "
-            f"user_id={normalize_id(target_uid)} "
-            f"premium={premium_text}"
-        )
+        premium_text = "TRUE" if premium else "FALSE"
+
+        new_row = [
+            target_user_id,
+            target_lang,
+            now_iso(),
+            premium_text,
+            usage_count,
+            group_id,
+            role,
+        ]
+
+        print(f"[PREMIUM SET] write_range=A{row_index}:G{row_index}")
+        print(f"[PREMIUM SET] new_row={new_row}")
+
+        try:
+            ws.update(f"A{row_index}:G{row_index}", [new_row])
+        except Exception as write_exc:
+            print(f"[SHEET WRITE ERROR] {str(write_exc)}")
+            return False
+
+        print(f"[PREMIUM SET] row={row_index} user_id={target_user_id} premium={premium_text}")
         return True
 
     except Exception as exc:
         print(f"[PREMIUM SET ERROR] {str(exc)}")
         return False
 
+
+def save_user_target_lang(user_id: str, target_lang: str, group_id: str = "USER") -> bool:
+    ws = get_worksheet(USER_LANG_SHEET_NAME)
+    if ws is None:
+        print("[LANG SAVE] worksheet unavailable")
+        return False
+
+    try:
+        target_uid = normalize_id(user_id)
+        row_index = find_user_row_index(ws, target_uid)
+
+        if not row_index:
+            print(f"[LANG SAVE] user_id not found: {target_uid}")
+            return False
+
+        current_row = ws.row_values(row_index)
+        premium_text = get_row_value(current_row, COL_IS_PREMIUM, "FALSE") or "FALSE"
+        usage_count = get_row_value(current_row, COL_USAGE_COUNT, "0") or "0"
+        role = get_row_value(current_row, COL_ROLE, "")
+
+        new_row = [
+            target_uid,
+            target_lang,
+            now_iso(),
+            premium_text,
+            usage_count,
+            group_id or "USER",
+            role,
+        ]
+
+        ws.update(f"A{row_index}:G{row_index}", [new_row])
+        print(f"[LANG SAVE] row={row_index} user_id={target_uid} target_lang={target_lang}")
+        return True
+
+    except Exception as exc:
+        print(f"[LANG SAVE ERROR] {str(exc)}")
+        return False
+
+
+def get_user_target_lang(user_id: str, default_lang: str = "en") -> str:
+    row = get_user_row(user_id)
+    if row is None:
+        print(f"[LANG] user_id not found, default={default_lang}")
+        return default_lang
+
+    target_lang = get_row_value(row, COL_TARGET_LANG, default_lang) or default_lang
+    print(f"[LANG] user_id={normalize_id(user_id)} target_lang={target_lang}")
+    return target_lang
+
+
 # =========================================================
 # LINE REPLY
 # =========================================================
 def reply_text(reply_token: str, text: str):
     try:
-        line_bot_api.reply_message(
-            reply_token,
-            TextSendMessage(text=text),
-        )
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=text))
+        print(f"[LINE REPLY] text={repr(text)}")
     except Exception as exc:
         print(f"[LINE REPLY ERROR] {str(exc)}")
+
+
+# =========================================================
+# TRANSLATE
+# =========================================================
+def translate_text(text: str, target_lang: str) -> Optional[str]:
+    if not GOOGLE_API_KEY:
+        print("[TRANSLATE ERROR] GOOGLE_API_KEY missing")
+        return None
+
+    payload = {
+        "q": text,
+        "target": target_lang,
+        "format": "text",
+        "key": GOOGLE_API_KEY,
+    }
+
+    try:
+        response = requests.post(GOOGLE_TRANSLATE_URL, data=payload, timeout=15)
+        print(f"[TRANSLATE] status={response.status_code}")
+
+        if response.status_code != 200:
+            print(f"[TRANSLATE ERROR] body={response.text}")
+            return None
+
+        data = response.json()
+        return data["data"]["translations"][0]["translatedText"]
+
+    except Exception as exc:
+        print(f"[TRANSLATE ERROR] {str(exc)}")
+        return None
+
 
 # =========================================================
 # WEBHOOK
 # =========================================================
 @app.route("/", methods=["GET"])
 def home():
-    return "DT79 LINE BOT LIVE", 200
+    return f"{APP_VERSION} LIVE", 200
+
 
 @app.route("/webhook", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
 
-    print(f"[WEBHOOK] body={body}")
     print(f"[WEBHOOK] signature_exists={bool(signature)}")
+    print(f"[WEBHOOK] body={body}")
 
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        print("[WEBHOOK ERROR] Invalid signature")
+        print("[WEBHOOK ERROR] invalid signature")
         abort(400)
     except Exception as exc:
         print(f"[WEBHOOK ERROR] {str(exc)}")
@@ -224,27 +412,23 @@ def callback():
 
     return "OK", 200
 
+
 # =========================================================
 # COMMAND HANDLER
 # =========================================================
 def process_commands(event) -> bool:
     user_id = normalize_id(event.source.user_id)
-    text = (event.message.text or "").strip()
+    group_id = normalize_id(getattr(event.source, "group_id", "") or "USER")
+    text = safe_str(event.message.text)
     reply_token = event.reply_token
 
     if not text.startswith("/"):
         return False
 
-    print(f"[EVENT] command={repr(text)} user_id={repr(user_id)}")
-
-    admin_list = get_admin_list()
-    is_admin = user_id in admin_list
-
-    print(f"[ROLE DEBUG] user_id={repr(user_id)} admin_list={admin_list}")
-    print(f"[ADMIN] user_id={repr(user_id)} admin={is_admin}")
+    print(f"[COMMAND] raw={repr(text)} user_id={repr(user_id)} group_id={repr(group_id)}")
 
     if text.startswith("/grant"):
-        if not is_admin:
+        if not is_user_admin(user_id):
             reply_text(reply_token, "Bạn không có quyền admin.")
             return True
 
@@ -268,7 +452,7 @@ def process_commands(event) -> bool:
         return True
 
     if text.startswith("/revoke"):
-        if not is_admin:
+        if not is_user_admin(user_id):
             reply_text(reply_token, "Bạn không có quyền admin.")
             return True
 
@@ -291,26 +475,70 @@ def process_commands(event) -> bool:
 
         return True
 
+    if text.startswith("/lang"):
+        parts = text.split()
+        print(f"[COMMAND] /lang parts={parts}")
+
+        if len(parts) != 2:
+            reply_text(reply_token, "Cú pháp: /lang zh")
+            return True
+
+        target_lang = normalize_target_lang(parts[1])
+        if not target_lang:
+            reply_text(reply_token, "Ngôn ngữ không hỗ trợ. Dùng: zh, en, vi, ja, ko, th, id")
+            return True
+
+        success = save_user_target_lang(user_id, target_lang, group_id=group_id)
+        if success:
+            reply_text(reply_token, f"Đã lưu ngôn ngữ: {target_lang}")
+        else:
+            reply_text(reply_token, "Lưu ngôn ngữ thất bại")
+        return True
+
+    short_lang_map = {
+        "/zh": "zh-TW",
+        "/en": "en",
+        "/vi": "vi",
+        "/ja": "ja",
+    }
+
+    if text in short_lang_map:
+        target_lang = short_lang_map[text]
+        success = save_user_target_lang(user_id, target_lang, group_id=group_id)
+        if success:
+            reply_text(reply_token, f"Đã lưu ngôn ngữ: {target_lang}")
+        else:
+            reply_text(reply_token, "Lưu ngôn ngữ thất bại")
+        return True
+
     return False
 
+
 # =========================================================
-# MESSAGE FLOW
+# MAIN FLOW
 # =========================================================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = normalize_id(event.source.user_id)
-    text = (event.message.text or "").strip()
+    text = safe_str(event.message.text)
 
-    print(f"[MESSAGE] user_id={repr(user_id)} text={repr(text)}")
+    print(f"[EVENT] user_id={repr(user_id)} text={repr(text)}")
 
-    is_command = process_commands(event)
-    if is_command:
-        print("[FLOW] command handled, stop translate flow")
+    # Chặn command tuyệt đối ở tầng cao nhất
+    if process_commands(event):
+        print("[FLOW] command handled -> stop")
         return
 
-    print(f"[TRANSLATE FLOW] processing={repr(text)}")
-    # Tạm thời để tránh nhiễu debug /grant
-    reply_text(event.reply_token, f"[AUTO -> en]\n{text}")
+    # Chỉ dịch khi không phải command
+    target_lang = get_user_target_lang(user_id, default_lang="en")
+    translated = translate_text(text, target_lang)
+
+    if translated is None:
+        reply_text(event.reply_token, "Dịch thất bại")
+        return
+
+    reply_text(event.reply_token, f"[AUTO -> {target_lang}]\n{translated}")
+
 
 # =========================================================
 # MAIN
