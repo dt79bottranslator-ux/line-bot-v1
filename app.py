@@ -1074,7 +1074,7 @@ def webhook():
     events = data.get("events", [])
     print(f"[WEBHOOK] events_count={len(events)}")
 
-    for event in events:
+        for event in events:
         event_type = event.get("type")
         source = event.get("source", {})
         message = event.get("message", {})
@@ -1087,18 +1087,6 @@ def webhook():
         message_type = message.get("type")
         text = (message.get("text") or "").strip()
 
-        print(
-            f"[EVENT] "
-            f'{{"event_type":"{event_type}",'
-            f'"reply_token_exists":{bool(reply_token)},'
-            f'"source_type":"{source_type}",'
-            f'"user_id":"{user_id}",'
-            f'"group_id":"{group_id}",'
-            f'"room_id":"{room_id}",'
-            f'"message_type":"{message_type}",'
-            f'"text":"{text}"}}'
-        )
-
         if event_type != "message":
             continue
 
@@ -1106,18 +1094,14 @@ def webhook():
             continue
 
         if not user_id:
-            print("[MESSAGE] user_id missing")
             if reply_token:
                 reply_line_message(reply_token, "Không lấy được user_id từ LINE event.")
             continue
 
-        print(f"[MESSAGE] source_type={source_type}")
-        print(f"[MESSAGE] group_id={group_id}")
-        print(f"[MESSAGE] room_id={room_id}")
-        print(f"[MESSAGE] user_id={user_id}")
-        print(f"[MESSAGE] text={text}")
+        # =========================
+        # COMMAND ROUTING (ĐỊNH TUYẾN LỆNH)
+        # =========================
 
-                # short command
         if handle_short_command(user_id, text, reply_token, group_id=group_id):
             continue
 
@@ -1138,6 +1122,10 @@ def webhook():
 
         if handle_revoke_command(user_id, text, reply_token):
             continue
+
+        # =========================
+        # NORMAL FLOW (DỊCH)
+        # =========================
 
         handle_normal_message(
             user_id=user_id,
