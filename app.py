@@ -857,9 +857,12 @@ def handle_upgrade_command(user_id: str, reply_token: str) -> bool:
         return True
 
     upgrade_text = (
-        "Nâng cấp Premium:\n"
-        "- Bỏ giới hạn miễn phí\n"
-        "- Ưu tiên hỗ trợ nhóm\n"
+        "Nâng cấp Premium:
+"
+        "- Bỏ giới hạn miễn phí
+"
+        "- Ưu tiên hỗ trợ nhóm
+"
         "- Liên hệ admin để kích hoạt"
     )
     ok = reply_line_message(reply_token, upgrade_text)
@@ -992,14 +995,15 @@ def handle_normal_message(
         return
 
     # ===== FREE LIMIT GUARD =====
-if not premium and usage > FREE_USAGE_LIMIT:
-    ok = reply_line_message(
-        reply_token,
-        f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần).\n"
-        f"Dùng /upgrade để nâng cấp."
-    )
-    print(f"[REPLY DEBUG] free limit blocked result={ok}")
-    return
+    if not premium and usage > FREE_USAGE_LIMIT:
+        ok = reply_line_message(
+            reply_token,
+            f"Bạn đã vượt giới hạn miễn phí ({FREE_USAGE_LIMIT} lần).
+"
+            f"Dùng /upgrade để nâng cấp."
+        )
+        print(f"[REPLY DEBUG] free limit blocked result={ok}")
+        return
 
     translated, source_lang = translate_text_with_meta(clean_text, target_lang)
 
@@ -1037,7 +1041,8 @@ if not premium and usage > FREE_USAGE_LIMIT:
     )
     print(f"[LOG] translation_log_saved={log_saved}")
 
-    output_text = f"[AUTO → {target_lang}]\n{translated}"
+    output_text = f"[AUTO → {target_lang}]
+{translated}"
     ok = reply_line_message(reply_token, output_text)
     print(f"[REPLY DEBUG] normal success result={ok}")
 
@@ -1112,36 +1117,32 @@ def webhook():
         print(f"[MESSAGE] user_id={user_id}")
         print(f"[MESSAGE] text={text}")
 
- # short command
-if handle_short_command(user_id, text, reply_token, group_id=group_id):
-    continue
+        # short command
+        if handle_short_command(user_id, text, reply_token, group_id=group_id):
+            continue
 
-if text.startswith("/lang"):
-    handle_lang_command(user_id, text, reply_token, group_id=group_id)
-    continue
+        if text.startswith("/lang"):
+            handle_lang_command(user_id, text, reply_token, group_id=group_id)
+            continue
 
-if text.startswith("/upgrade"):
-    reply_line_message(
-        reply_token,
-        "Nâng cấp Premium:\n- Bỏ giới hạn miễn phí\n- Ưu tiên hỗ trợ nhóm\n- Liên hệ admin để kích hoạt"
-    )
-    print("[REPLY DEBUG] upgrade command result=True")
-    continue
+        if text.startswith("/upgrade"):
+            handle_upgrade_command(user_id, reply_token)
+            continue
 
-if handle_grant_command(user_id, text, reply_token):
-    continue
+        if handle_grant_command(user_id, text, reply_token):
+            continue
 
-if handle_revoke_command(user_id, text, reply_token):
-    continue
+        if handle_revoke_command(user_id, text, reply_token):
+            continue
 
-handle_normal_message(
-    user_id=user_id,
-    text=text,
-    reply_token=reply_token,
-    source_type=source_type,
-    group_id=group_id,
-    room_id=room_id,
-)
+        handle_normal_message(
+            user_id=user_id,
+            text=text,
+            reply_token=reply_token,
+            source_type=source_type,
+            group_id=group_id,
+            room_id=room_id,
+        )
 
     return jsonify({"ok": True}), 200
 
