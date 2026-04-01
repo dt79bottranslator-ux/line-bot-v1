@@ -291,8 +291,6 @@ def get_usage_log_worksheet():
 
 # =========================================================
 # USER_LANG_MAP HELPERS
-# SCHEMA:
-# user_id | target_lang | updated_at | is_premium | usage_count | group_id | role
 # =========================================================
 def ensure_user_lang_headers(worksheet) -> bool:
     if worksheet is None:
@@ -857,12 +855,9 @@ def handle_upgrade_command(user_id: str, reply_token: str) -> bool:
         return True
 
     upgrade_text = (
-        "Nâng cấp Premium:
-"
-        "- Bỏ giới hạn miễn phí
-"
-        "- Ưu tiên hỗ trợ nhóm
-"
+        "Nâng cấp Premium:\n"
+        "- Bỏ giới hạn miễn phí\n"
+        "- Ưu tiên hỗ trợ nhóm\n"
         "- Liên hệ admin để kích hoạt"
     )
     ok = reply_line_message(reply_token, upgrade_text)
@@ -946,7 +941,6 @@ def handle_normal_message(
     clean_text = clean_input_text(text)
     print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
 
-    # ===== COOLDOWN GUARD =====
     current_time = time.time()
     last_time = LAST_MESSAGE_TIME.get(user_id, 0)
 
@@ -960,7 +954,6 @@ def handle_normal_message(
 
     LAST_MESSAGE_TIME[user_id] = current_time
 
-    # ===== COST GUARD =====
     if len(clean_text) > MAX_TEXT_LENGTH:
         reply_line_message(
             reply_token,
@@ -992,7 +985,6 @@ def handle_normal_message(
     print(f"[GROUP GUARD] group_id={group_id} usage={group_usage}")
     print(f"[LIMIT] usage={usage} premium={premium}")
 
-    # ===== GROUP GUARD =====
     if group_usage > GROUP_DAILY_LIMIT:
         reply_line_message(
             reply_token,
@@ -1001,7 +993,6 @@ def handle_normal_message(
         print(f"[GROUP GUARD] BLOCKED group_id={group_id}")
         return
 
-    # ===== FREE LIMIT GUARD =====
     if not premium and usage > FREE_USAGE_LIMIT:
         reply_line_message(
             reply_token,
@@ -1049,9 +1040,6 @@ def handle_normal_message(
     output_text = f"[AUTO → {target_lang}]\n{translated}"
     ok = reply_line_message(reply_token, output_text)
     print(f"[REPLY DEBUG] normal success result={ok}")
-    output_text = f"[AUTO → {target_lang}]\n{translated}"
-    ok = reply_line_message(reply_token, output_text)
-    print(f"[REPLY DEBUG] normal success result={ok}")
 
 
 # =========================================================
@@ -1081,7 +1069,7 @@ def webhook():
     events = data.get("events", [])
     print(f"[WEBHOOK] events_count={len(events)}")
 
-        for event in events:
+    for event in events:
         event_type = event.get("type")
         source = event.get("source", {})
         message = event.get("message", {})
@@ -1094,6 +1082,18 @@ def webhook():
         message_type = message.get("type")
         text = (message.get("text") or "").strip()
 
+        print(
+            f"[EVENT] "
+            f'{{"event_type":"{event_type}",'
+            f'"reply_token_exists":{bool(reply_token)},'
+            f'"source_type":"{source_type}",'
+            f'"user_id":"{user_id}",'
+            f'"group_id":"{group_id}",'
+            f'"room_id":"{room_id}",'
+            f'"message_type":"{message_type}",'
+            f'"text":"{text}"}}'
+        )
+
         if event_type != "message":
             continue
 
@@ -1101,13 +1101,16 @@ def webhook():
             continue
 
         if not user_id:
+            print("[MESSAGE] user_id missing")
             if reply_token:
                 reply_line_message(reply_token, "Không lấy được user_id từ LINE event.")
             continue
 
-        # =========================
-        # COMMAND ROUTING (ĐỊNH TUYẾN LỆNH)
-        # =========================
+        print(f"[MESSAGE] source_type={source_type}")
+        print(f"[MESSAGE] group_id={group_id}")
+        print(f"[MESSAGE] room_id={room_id}")
+        print(f"[MESSAGE] user_id={user_id}")
+        print(f"[MESSAGE] text={text}")
 
         if handle_short_command(user_id, text, reply_token, group_id=group_id):
             continue
@@ -1117,11 +1120,7 @@ def webhook():
             continue
 
         if text.startswith("/upgrade"):
-            reply_line_message(
-                reply_token,
-                "Nâng cấp Premium:\n- Bỏ giới hạn miễn phí\n- Ưu tiên hỗ trợ nhóm\n- Liên hệ admin để kích hoạt"
-            )
-            print("[REPLY DEBUG] upgrade command result=True")
+            handle_upgrade_command(user_id, reply_token)
             continue
 
         if handle_grant_command(user_id, text, reply_token):
@@ -1129,10 +1128,6 @@ def webhook():
 
         if handle_revoke_command(user_id, text, reply_token):
             continue
-
-        # =========================
-        # NORMAL FLOW (DỊCH)
-        # =========================
 
         handle_normal_message(
             user_id=user_id,
