@@ -1049,6 +1049,9 @@ def handle_normal_message(
     output_text = f"[AUTO → {target_lang}]\n{translated}"
     ok = reply_line_message(reply_token, output_text)
     print(f"[REPLY DEBUG] normal success result={ok}")
+    output_text = f"[AUTO → {target_lang}]\n{translated}"
+    ok = reply_line_message(reply_token, output_text)
+    print(f"[REPLY DEBUG] normal success result={ok}")
 
 
 # =========================================================
