@@ -1,6 +1,6 @@
 import os
 import json
-import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, List
 
@@ -22,7 +22,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 # [1. SYSTEM IDENTITY & CONFIG]
 # =========================================================
 app = Flask(__name__)
-APP_VERSION = "DT79_V8_ULTRA_STABLE_REPO_RENDER_1"
+APP_VERSION = "DT79_V9_FINAL_LOCK_REPO_RENDER_1"
 
 LINE_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
 LINE_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or "").strip()
@@ -34,7 +34,10 @@ SHEET_NAME = "USER_LANG_MAP"
 ADMIN_LIST = ["U83c6ce008a35ef17edaff25ac003370"] 
 
 def normalize_id(val: Any) -> str:
-    return str(val or "").strip().replace(" ", "").replace("\n", "").replace("\r", "")
+    """Xóa sạch tuyệt đối ký tự trắng, xuống dòng và ký tự tàng hình."""
+    s = str(val or "").strip()
+    # Sử dụng Regex để quét sạch mọi loại ký tự trắng (kể cả Unicode tàng hình)
+    return re.sub(r'[\s\u200b\ufeff\u2060\xa0]', '', s)
 
 # =========================================================
 # [LINE & SHEET INIT]
@@ -84,26 +87,26 @@ def callback():
 # =========================================================
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
-    # [AUTH CHECK] 
+    # [AUTH CHECK] - Làm sạch ID triệt để bằng Regex
     real_uid = normalize_id(event.source.user_id)
     token = event.reply_token
     raw_incoming = event.message.text or ""
     
-    # [9. KNOWN BUGS FIX] Gom dòng cho điện thoại
+    # Gom dòng cho điện thoại (Biến "\n" thành " ")
     clean_incoming = " ".join(raw_incoming.split()) 
 
     # [5. FLOW CONTROL — COMMAND LOCK]
     if clean_incoming.startswith("/"):
+        # Log để hậu kiểm trong Render Logs
         print(f"[AUTH CHECK] uid='{real_uid}'")
         print(f"[AUTH CHECK] admin_list={ADMIN_LIST}")
         
-        # [4. AUTH SYSTEM LOCK]
         is_admin = real_uid in ADMIN_LIST
         print(f"[AUTH CHECK] match={is_admin}")
 
         if not is_admin:
             reply_msg(token, f"❌ Quyền Admin bị từ chối.\nID của bạn: {real_uid}")
-            return # Thoát ngay
+            return 
 
         # Xử lý lệnh /grant
         if clean_incoming.lower().startswith("/grant"):
@@ -112,6 +115,7 @@ def handle_text(event):
                 reply_msg(token, "Cú pháp: /grant USER_ID")
                 return
 
+            # Làm sạch target UID
             target = normalize_id(parts[1])
             ws = get_ws()
             if not ws: 
@@ -119,34 +123,31 @@ def handle_text(event):
                 return
 
             try:
-                # [DATA FLOW] Tìm và cập nhật
-                cells = ws.findall(target) # Tìm nhanh theo UID
+                # [DATA FLOW] Tìm và cập nhật bằng findall (chính xác hơn)
+                cells = ws.findall(target) 
                 now_ts = datetime.now(timezone.utc).isoformat()
                 
                 if cells:
                     for cell in cells:
-                        ws.update_cell(cell.row, 4, "TRUE") # Cột D: Premium
-                        ws.update_cell(cell.row, 3, now_ts) # Cột C: Time
+                        ws.update_cell(cell.row, 4, "TRUE") # Cột D
+                        ws.update_cell(cell.row, 3, now_ts) # Cột C
                     msg = f"✅ [MATCH FOUND]\nUser: {target}\nStatus: PREMIUM SET"
                 else:
-                    # Nếu chưa có thì thêm mới
                     ws.append_row([target, "en", now_ts, "TRUE", "0", "USER", "user"])
                     msg = f"✅ [NEW RECORD]\nUser: {target}\nStatus: PREMIUM CREATED"
                 
                 reply_msg(token, msg)
-                return # NGẮT LUỒNG SAU KHI XỬ LÝ XONG
+                return 
             except Exception as e:
                 reply_msg(token, f"❌ [MATCH FAILED] Lỗi: {str(e)}")
                 return
 
-        return # Ngắt mọi lệnh bắt đầu bằng / khác
+        return # Ngắt mọi lệnh / khác
 
     # =====================================================
-    # [TRANSLATION FLOW] - CHỈ CHẠY NẾU KHÔNG PHẢI COMMAND
+    # [TRANSLATION FLOW] - Chỉ chạy nếu không phải lệnh
     # =====================================================
-    # Logic dịch của anh để ở đây
     print(f"[EVENT] Processing text: {clean_incoming}")
-    # reply_msg(token, f"ID của bạn: {real_uid}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
