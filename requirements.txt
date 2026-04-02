@@ -1,6 +1,6 @@
-flask
-requests
-google-auth
-gspread
-oauth2client
-gunicorn
+Flask==3.0.0
+line-bot-sdk>=3.0.0
+gspread==5.12.0
+oauth2client==4.1.3
+requests==2.31.0
+gunicorn==21.2.0
