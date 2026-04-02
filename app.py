@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, List
 
@@ -18,71 +19,29 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 # =========================================================
-# APP INIT
+# [1. SYSTEM IDENTITY & CONFIG]
 # =========================================================
 app = Flask(__name__)
-APP_VERSION = "DT79_V6_FINAL_STABLE_AUTO_JOIN"
+APP_VERSION = "DT79_V8_ULTRA_STABLE_REPO_RENDER_1"
 
-# =========================================================
-# ENV CONFIG
-# =========================================================
 LINE_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
 LINE_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or "").strip()
 SHEET_ID = (os.getenv("GOOGLE_SHEET_ID") or os.getenv("SPREADSHEET_ID") or "").strip()
 GOOGLE_JSON = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
 SHEET_NAME = "USER_LANG_MAP"
 
-# =========================================================
-# NORMALIZE (HÀM LÀM SẠCH UID)
-# =========================================================
+# [4. AUTH SYSTEM — ADMIN AXIS LOCK]
+ADMIN_LIST = ["U83c6ce008a35ef17edaff25ac003370"] 
+
 def normalize_id(val: Any) -> str:
-    return (
-        str(val or "")
-        .strip()
-        .replace("\u200b", "")
-        .replace("\ufeff", "")
-        .replace("\u2060", "")
-        .replace("\xa0", "")
-        .replace("\n", "")
-        .replace("\r", "")
-        .replace(" ", "")
-    )
+    return str(val or "").strip().replace(" ", "").replace("\n", "").replace("\r", "")
 
 # =========================================================
-# ADMIN CONFIG
-# =========================================================
-def get_admins() -> List[str]:
-    # Hard-code UID của anh để đảm bảo không bao giờ mất quyền Admin
-    default_admin = "U83c6ce008a35ef17edaff25ac003370"
-    raw = os.getenv("ADMIN_LIST") or default_admin
-    return [normalize_id(x) for x in raw.split(",") if normalize_id(x)]
-
-ADMIN_LIST = get_admins()
-
-# =========================================================
-# LINE INIT
+# [LINE & SHEET INIT]
 # =========================================================
 configuration = Configuration(access_token=LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
 
-print(f"[BOOT] {APP_VERSION}")
-print(f"[BOOT] ADMIN_LIST CLEAN: {ADMIN_LIST}")
-
-# =========================================================
-# REPLY
-# =========================================================
-def reply_msg(token, text):
-    with ApiClient(configuration) as api_client:
-        MessagingApi(api_client).reply_message(
-            ReplyMessageRequest(
-                reply_token=token,
-                messages=[V3TextMessage(text=text)]
-            )
-        )
-
-# =========================================================
-# GOOGLE SHEET
-# =========================================================
 def get_ws():
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
@@ -94,12 +53,21 @@ def get_ws():
         print(f"[SHEET ERROR] {e}")
         return None
 
+def reply_msg(token, text):
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(
+                reply_token=token,
+                messages=[V3TextMessage(text=text)]
+            )
+        )
+
 # =========================================================
-# ROUTES
+# [ROUTES]
 # =========================================================
 @app.route("/", methods=["GET"])
 def home():
-    return f"{APP_VERSION} LIVE", 200
+    return f"{APP_VERSION} - REPO: line-bot-render-1 LIVE", 200
 
 @app.route("/webhook", methods=["POST"])
 def callback():
@@ -112,65 +80,73 @@ def callback():
     return "OK"
 
 # =========================================================
-# MAIN HANDLER
+# [7. DEBUG PROTOCOL & 5. COMMAND LOCK]
 # =========================================================
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
+    # [AUTH CHECK] 
     real_uid = normalize_id(event.source.user_id)
     token = event.reply_token
-    
-    # 🔥 CẢI TIẾN QUAN TRỌNG: Tự động gom dòng bị ngắt trên điện thoại
-    # Biến "/grant\nUID" thành "/grant UID"
     raw_incoming = event.message.text or ""
-    clean_incoming = " ".join(raw_incoming.split()) 
     
-    print(f"[INCOMING RAW] {repr(raw_incoming)}")
-    print(f"[INCOMING CLEAN] {repr(clean_incoming)}")
+    # [9. KNOWN BUGS FIX] Gom dòng cho điện thoại
+    clean_incoming = " ".join(raw_incoming.split()) 
 
-    # =====================================================
-    # COMMAND LAYER
-    # =====================================================
+    # [5. FLOW CONTROL — COMMAND LOCK]
     if clean_incoming.startswith("/"):
-        if real_uid not in ADMIN_LIST:
-            return reply_msg(token, f"❌ Bạn không có quyền Admin.\nID: {real_uid}")
+        print(f"[AUTH CHECK] uid='{real_uid}'")
+        print(f"[AUTH CHECK] admin_list={ADMIN_LIST}")
+        
+        # [4. AUTH SYSTEM LOCK]
+        is_admin = real_uid in ADMIN_LIST
+        print(f"[AUTH CHECK] match={is_admin}")
 
-        parts = clean_incoming.split()
-        cmd = parts[0].lower()
+        if not is_admin:
+            reply_msg(token, f"❌ Quyền Admin bị từ chối.\nID của bạn: {real_uid}")
+            return # Thoát ngay
 
-        # Lệnh /GRANT
-        if cmd == "/grant":
+        # Xử lý lệnh /grant
+        if clean_incoming.lower().startswith("/grant"):
+            parts = clean_incoming.split()
             if len(parts) < 2:
-                return reply_msg(token, "Cú pháp: /grant USER_ID")
+                reply_msg(token, "Cú pháp: /grant USER_ID")
+                return
 
-            # Ghép tất cả phần còn lại (phòng hờ UID bị dính khoảng trắng)
-            target = normalize_id("".join(parts[1:]))
-            
+            target = normalize_id(parts[1])
             ws = get_ws()
-            if not ws: return reply_msg(token, "❌ Lỗi kết nối Sheet")
+            if not ws: 
+                reply_msg(token, "❌ Lỗi kết nối Sheet")
+                return
 
             try:
-                rows = ws.get_all_values()
-                row_idx = None
-                for i, r in enumerate(rows):
-                    if i == 0: continue
-                    if normalize_id(r[0]) == target:
-                        row_idx = i + 1
-                        break
-
+                # [DATA FLOW] Tìm và cập nhật
+                cells = ws.findall(target) # Tìm nhanh theo UID
                 now_ts = datetime.now(timezone.utc).isoformat()
-                if row_idx:
-                    ws.update_cell(row_idx, 4, "TRUE")
-                    ws.update_cell(row_idx, 3, now_ts)
+                
+                if cells:
+                    for cell in cells:
+                        ws.update_cell(cell.row, 4, "TRUE") # Cột D: Premium
+                        ws.update_cell(cell.row, 3, now_ts) # Cột C: Time
+                    msg = f"✅ [MATCH FOUND]\nUser: {target}\nStatus: PREMIUM SET"
                 else:
+                    # Nếu chưa có thì thêm mới
                     ws.append_row([target, "en", now_ts, "TRUE", "0", "USER", "user"])
-
-                return reply_msg(token, f"✅ Đã cấp Premium thành công cho:\n{target}")
-
+                    msg = f"✅ [NEW RECORD]\nUser: {target}\nStatus: PREMIUM CREATED"
+                
+                reply_msg(token, msg)
+                return # NGẮT LUỒNG SAU KHI XỬ LÝ XONG
             except Exception as e:
-                return reply_msg(token, f"❌ Lỗi ghi Sheet: {str(e)}")
+                reply_msg(token, f"❌ [MATCH FAILED] Lỗi: {str(e)}")
+                return
 
-    # Trả về thông tin UID để Admin dễ copy
-    return reply_msg(token, f"🆔 UID của bạn:\n{real_uid}")
+        return # Ngắt mọi lệnh bắt đầu bằng / khác
+
+    # =====================================================
+    # [TRANSLATION FLOW] - CHỈ CHẠY NẾU KHÔNG PHẢI COMMAND
+    # =====================================================
+    # Logic dịch của anh để ở đây
+    print(f"[EVENT] Processing text: {clean_incoming}")
+    # reply_msg(token, f"ID của bạn: {real_uid}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
