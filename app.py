@@ -21,7 +21,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 # APP INIT
 # =========================================================
 app = Flask(__name__)
-APP_VERSION = "DT79_V5_FINAL_ADMIN_FIX"
+APP_VERSION = "DT79_V6_FINAL_STABLE_AUTO_JOIN"
 
 # =========================================================
 # ENV CONFIG
@@ -30,11 +30,10 @@ LINE_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
 LINE_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or "").strip()
 SHEET_ID = (os.getenv("GOOGLE_SHEET_ID") or os.getenv("SPREADSHEET_ID") or "").strip()
 GOOGLE_JSON = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
-
 SHEET_NAME = "USER_LANG_MAP"
 
 # =========================================================
-# NORMALIZE (FIX CHÍ MẠNG)
+# NORMALIZE (HÀM LÀM SẠCH UID)
 # =========================================================
 def normalize_id(val: Any) -> str:
     return (
@@ -46,13 +45,16 @@ def normalize_id(val: Any) -> str:
         .replace("\xa0", "")
         .replace("\n", "")
         .replace("\r", "")
+        .replace(" ", "")
     )
 
 # =========================================================
 # ADMIN CONFIG
 # =========================================================
 def get_admins() -> List[str]:
-    raw = os.getenv("ADMIN_LIST") or "U83c6ce008a35ef17edaff25ac003370"
+    # Hard-code UID của anh để đảm bảo không bao giờ mất quyền Admin
+    default_admin = "U83c6ce008a35ef17edaff25ac003370"
+    raw = os.getenv("ADMIN_LIST") or default_admin
     return [normalize_id(x) for x in raw.split(",") if normalize_id(x)]
 
 ADMIN_LIST = get_admins()
@@ -63,11 +65,7 @@ ADMIN_LIST = get_admins()
 configuration = Configuration(access_token=LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
 
-# =========================================================
-# BOOT LOG
-# =========================================================
 print(f"[BOOT] {APP_VERSION}")
-print(f"[BOOT] ADMIN_LIST RAW: {os.getenv('ADMIN_LIST')}")
 print(f"[BOOT] ADMIN_LIST CLEAN: {ADMIN_LIST}")
 
 # =========================================================
@@ -89,10 +87,7 @@ def get_ws():
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
             json.loads(GOOGLE_JSON),
-            [
-                "https://spreadsheets.google.com/feeds",
-                "https://www.googleapis.com/auth/drive",
-            ],
+            ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"],
         )
         return gspread.authorize(creds).open_by_key(SHEET_ID).worksheet(SHEET_NAME)
     except Exception as e:
@@ -110,12 +105,10 @@ def home():
 def callback():
     sig = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-
     try:
         handler.handle(body, sig)
     except InvalidSignatureError:
         abort(400)
-
     return "OK"
 
 # =========================================================
@@ -124,86 +117,60 @@ def callback():
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
     real_uid = normalize_id(event.source.user_id)
-    text = (event.message.text or "").strip()
     token = event.reply_token
-
-    print(f"[REAL USER ID] {repr(real_uid)}")
-    print(f"[INCOMING] text={repr(text)}")
+    
+    # 🔥 CẢI TIẾN QUAN TRỌNG: Tự động gom dòng bị ngắt trên điện thoại
+    # Biến "/grant\nUID" thành "/grant UID"
+    raw_incoming = event.message.text or ""
+    clean_incoming = " ".join(raw_incoming.split()) 
+    
+    print(f"[INCOMING RAW] {repr(raw_incoming)}")
+    print(f"[INCOMING CLEAN] {repr(clean_incoming)}")
 
     # =====================================================
-    # COMMAND LAYER (CHẶN TUYỆT ĐỐI)
+    # COMMAND LAYER
     # =====================================================
-    if text.startswith("/"):
-
-        # 🔥 FIX CHÍ MẠNG Ở ĐÂY
-        admin_clean = [normalize_id(x) for x in ADMIN_LIST]
-
-        print(f"[ADMIN CHECK] real={repr(real_uid)} vs list={admin_clean}")
-
-        if real_uid not in admin_clean:
-            print("[AUTH DENIED]")
+    if clean_incoming.startswith("/"):
+        if real_uid not in ADMIN_LIST:
             return reply_msg(token, f"❌ Bạn không có quyền Admin.\nID: {real_uid}")
 
-        print("[ADMIN PASS]")
+        parts = clean_incoming.split()
+        cmd = parts[0].lower()
 
-        parts = text.split()
-
-        # =================================================
-        # /GRANT
-        # =================================================
-        if parts[0].lower() == "/grant":
-            if len(parts) != 2:
+        # Lệnh /GRANT
+        if cmd == "/grant":
+            if len(parts) < 2:
                 return reply_msg(token, "Cú pháp: /grant USER_ID")
 
-            target = normalize_id(parts[1])
-            print(f"[TARGET] {repr(target)}")
-
+            # Ghép tất cả phần còn lại (phòng hờ UID bị dính khoảng trắng)
+            target = normalize_id("".join(parts[1:]))
+            
             ws = get_ws()
-            if not ws:
-                return reply_msg(token, "❌ Lỗi kết nối Sheet")
+            if not ws: return reply_msg(token, "❌ Lỗi kết nối Sheet")
 
             try:
                 rows = ws.get_all_values()
-
                 row_idx = None
                 for i, r in enumerate(rows):
-                    if i == 0:
-                        continue
+                    if i == 0: continue
                     if normalize_id(r[0]) == target:
                         row_idx = i + 1
                         break
 
+                now_ts = datetime.now(timezone.utc).isoformat()
                 if row_idx:
                     ws.update_cell(row_idx, 4, "TRUE")
-                    ws.update_cell(row_idx, 3, datetime.now(timezone.utc).isoformat())
-                    print(f"[MATCH FOUND] row={row_idx}")
+                    ws.update_cell(row_idx, 3, now_ts)
                 else:
-                    ws.append_row([
-                        target,
-                        "en",
-                        datetime.now(timezone.utc).isoformat(),
-                        "TRUE",
-                        "0",
-                        "USER",
-                        "user",
-                    ])
-                    print("[APPEND NEW USER]")
+                    ws.append_row([target, "en", now_ts, "TRUE", "0", "USER", "user"])
 
-                return reply_msg(token, f"✅ Premium: {target}")
+                return reply_msg(token, f"✅ Đã cấp Premium thành công cho:\n{target}")
 
             except Exception as e:
-                print(f"[SHEET WRITE ERROR] {e}")
-                return reply_msg(token, "❌ Lỗi ghi Sheet")
+                return reply_msg(token, f"❌ Lỗi ghi Sheet: {str(e)}")
 
-        return reply_msg(token, "❌ Lệnh không hợp lệ")
+    # Trả về thông tin UID để Admin dễ copy
+    return reply_msg(token, f"🆔 UID của bạn:\n{real_uid}")
 
-    # =====================================================
-    # NON-COMMAND
-    # =====================================================
-    return reply_msg(token, f"[DEBUG] UID: {real_uid}")
-
-# =========================================================
-# MAIN
-# =========================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
