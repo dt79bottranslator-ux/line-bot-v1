@@ -22,7 +22,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 # [1. SYSTEM IDENTITY & CONFIG]
 # =========================================================
 app = Flask(__name__)
-APP_VERSION = "DT79_V9_FINAL_LOCK_REPO_RENDER_1"
+APP_VERSION = "DT79_V10_SUPER_LOCK"
 
 LINE_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
 LINE_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or "").strip()
@@ -31,13 +31,13 @@ GOOGLE_JSON = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
 SHEET_NAME = "USER_LANG_MAP"
 
 # [4. AUTH SYSTEM — ADMIN AXIS LOCK]
+# ID CỦA ANH DŨNG - ĐÃ KHÓA CỨNG
 ADMIN_LIST = ["U83c6ce008a35ef17edaff25ac003370"] 
 
 def normalize_id(val: Any) -> str:
-    """Xóa sạch tuyệt đối ký tự trắng, xuống dòng và ký tự tàng hình."""
-    s = str(val or "").strip()
-    # Sử dụng Regex để quét sạch mọi loại ký tự trắng (kể cả Unicode tàng hình)
-    return re.sub(r'[\s\u200b\ufeff\u2060\xa0]', '', s)
+    """Vá lỗi: Xóa sạch khoảng trắng và ép kiểu về string chuẩn."""
+    if not val: return ""
+    return str(val).strip()
 
 # =========================================================
 # [LINE & SHEET INIT]
@@ -83,71 +83,72 @@ def callback():
     return "OK"
 
 # =========================================================
-# [7. DEBUG PROTOCOL & 5. COMMAND LOCK]
+# [VÁ LỖI LOGIC ADMIN & CẤP QUYỀN]
 # =========================================================
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
-    # [AUTH CHECK] - Làm sạch ID triệt để bằng Regex
+    # Lấy ID người gửi và làm sạch ngay lập tức
     real_uid = normalize_id(event.source.user_id)
     token = event.reply_token
     raw_incoming = event.message.text or ""
     
-    # Gom dòng cho điện thoại (Biến "\n" thành " ")
+    # [VÁ LỖI]: Hợp nhất các dòng nếu người dùng nhấn Enter trên điện thoại
     clean_incoming = " ".join(raw_incoming.split()) 
 
-    # [5. FLOW CONTROL — COMMAND LOCK]
-    if clean_incoming.startswith("/"):
-        # Log để hậu kiểm trong Render Logs
-        print(f"[AUTH CHECK] uid='{real_uid}'")
-        print(f"[AUTH CHECK] admin_list={ADMIN_LIST}")
-        
-        is_admin = real_uid in ADMIN_LIST
-        print(f"[AUTH CHECK] match={is_admin}")
+    # Kiểm tra quyền Admin
+    is_admin = real_uid in ADMIN_LIST
 
+    # Xử lý các lệnh bắt đầu bằng "/"
+    if clean_incoming.startswith("/"):
+        # Lệnh kiểm tra ID cá nhân (Dành cho mọi người)
+        if clean_incoming.lower() == "/me":
+            reply_msg(token, f"🆔 ID của bạn là:\n{real_uid}")
+            return
+
+        # CHẶN ADMIN: Nếu không phải admin thì không cho chạy lệnh /grant
         if not is_admin:
             reply_msg(token, f"❌ Quyền Admin bị từ chối.\nID của bạn: {real_uid}")
             return 
 
-        # Xử lý lệnh /grant
+        # Xử lý lệnh /grant (Chỉ Admin mới tới được đây)
         if clean_incoming.lower().startswith("/grant"):
             parts = clean_incoming.split()
             if len(parts) < 2:
                 reply_msg(token, "Cú pháp: /grant USER_ID")
                 return
 
-            # Làm sạch target UID
+            # Lấy target ID (Lọc sạch dấu cách dư thừa)
             target = normalize_id(parts[1])
             ws = get_ws()
             if not ws: 
-                reply_msg(token, "❌ Lỗi kết nối Sheet")
+                reply_msg(token, "❌ Lỗi kết nối Google Sheet")
                 return
 
             try:
-                # [DATA FLOW] Tìm và cập nhật bằng findall (chính xác hơn)
+                # Tìm kiếm và cập nhật trạng thái Premium
                 cells = ws.findall(target) 
                 now_ts = datetime.now(timezone.utc).isoformat()
                 
                 if cells:
                     for cell in cells:
-                        ws.update_cell(cell.row, 4, "TRUE") # Cột D
-                        ws.update_cell(cell.row, 3, now_ts) # Cột C
-                    msg = f"✅ [MATCH FOUND]\nUser: {target}\nStatus: PREMIUM SET"
+                        ws.update_cell(cell.row, 4, "TRUE") # Cột D: Premium Status
+                        ws.update_cell(cell.row, 3, now_ts) # Cột C: Timestamp
+                    msg = f"✅ [KHỚP DỮ LIỆU]\nUser: {target}\nTrạng thái: ĐÃ NÂNG CẤP PREMIUM"
                 else:
+                    # Nếu chưa có thì tạo mới dòng người dùng
                     ws.append_row([target, "en", now_ts, "TRUE", "0", "USER", "user"])
-                    msg = f"✅ [NEW RECORD]\nUser: {target}\nStatus: PREMIUM CREATED"
+                    msg = f"✅ [TẠO MỚI]\nUser: {target}\nTrạng thái: ĐÃ CẤP QUYỀN PREMIUM"
                 
                 reply_msg(token, msg)
                 return 
             except Exception as e:
-                reply_msg(token, f"❌ [MATCH FAILED] Lỗi: {str(e)}")
+                reply_msg(token, f"❌ [THẤT BẠI] Lỗi Sheet: {str(e)}")
                 return
 
-        return # Ngắt mọi lệnh / khác
+        return # Kết thúc các lệnh bắt đầu bằng /
 
-    # =====================================================
-    # [TRANSLATION FLOW] - Chỉ chạy nếu không phải lệnh
-    # =====================================================
-    print(f"[EVENT] Processing text: {clean_incoming}")
+    # [PHẦN DÀNH CHO DỊCH THUẬT - SẼ PHÁT TRIỂN TIẾP]
+    print(f"[EVENT] Tin nhắn từ {real_uid}: {clean_incoming}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
